@@ -6,12 +6,13 @@ Implements:
   - Path obstruction check (ghost-ball clearance)
   - Direct shot detection
   - One-bank shot detection (object ball reflection off rail)
+  - Integrated cushion throw correction (v2 Feature 4)
 
 All coordinates are in mm in table space:
   x: 0 (left) → table_width  (right)
   y: 0 (bottom) → table_height (top)
 
-SPEC.md §2.2 Algorithm reference.
+SPEC.md §2.2 Algorithm & §Feature 4 reference.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import math
 from typing import List, Optional, Tuple
 
 from models import Ball, Pocket, DirectShot, BankShot, Point, PocketId, RailId
+from cushion_throw import calculate_cushion_throw
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -27,17 +29,10 @@ from models import Ball, Pocket, DirectShot, BankShot, Point, PocketId, RailId
 BALL_DIAMETER_MM = 57.15
 BALL_RADIUS_MM = BALL_DIAMETER_MM / 2.0
 
-# Pocket opening radii (half the physical opening width)
 CORNER_POCKET_RADIUS_MM = 57.0
 SIDE_POCKET_RADIUS_MM = 63.0
-
-# Pocket check tolerance — how close the reflected ray must come to pocket centre
 POCKET_CAPTURE_RADIUS_MM = SIDE_POCKET_RADIUS_MM
 
-
-# ---------------------------------------------------------------------------
-# Vector helpers
-# ---------------------------------------------------------------------------
 
 def _vec_sub(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
     return (a[0] - b[0], a[1] - b[1])
@@ -66,39 +61,24 @@ def _vec_add(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, flo
     return (a[0] + b[0], a[1] + b[1])
 
 
-# ---------------------------------------------------------------------------
-# Perpendicular distance from point P to the line segment AB
-# ---------------------------------------------------------------------------
-
 def perp_distance_point_to_segment(
     px: float, py: float,
     ax: float, ay: float,
     bx: float, by: float,
 ) -> float:
-    """
-    Returns the minimum distance from point (px, py) to the finite
-    line segment from (ax, ay) to (bx, by).
-    """
     dx = bx - ax
     dy = by - ay
     seg_len_sq = dx * dx + dy * dy
     if seg_len_sq < 1e-12:
-        # Degenerate segment — treat as point distance
         return math.hypot(px - ax, py - ay)
 
-    # Project P onto the line AB, clamped to [0, 1]
     t = ((px - ax) * dx + (py - ay) * dy) / seg_len_sq
     t = max(0.0, min(1.0, t))
 
-    # Closest point on segment
     cx = ax + t * dx
     cy = ay + t * dy
     return math.hypot(px - cx, py - cy)
 
-
-# ---------------------------------------------------------------------------
-# Path clear check
-# ---------------------------------------------------------------------------
 
 def is_path_clear(
     start: Tuple[float, float],
@@ -106,13 +86,6 @@ def is_path_clear(
     all_balls: List[Ball],
     excluded_ids: set[str],
 ) -> bool:
-    """
-    Returns True if the line segment (start → end) is not obstructed by
-    any ball whose ID is not in excluded_ids.
-
-    Obstruction: perpendicular distance from ball centre to segment < BALL_DIAMETER_MM.
-    (ghost-ball clearance check per SPEC §2.2 Step 1)
-    """
     ax, ay = start
     bx, by = end
     for ball in all_balls:
@@ -124,33 +97,22 @@ def is_path_clear(
     return True
 
 
-# ---------------------------------------------------------------------------
-# Rail contact point validity
-# ---------------------------------------------------------------------------
-
 def _is_contact_point_valid(
     px: float, py: float,
     rail: str,
     table_width: float,
     table_height: float,
 ) -> bool:
-    """
-    Check that contact point P lies in the active cushion range:
-    not inside a corner or side pocket opening.
-    SPEC §2.2 Step 4.
-    """
     cp_r = CORNER_POCKET_RADIUS_MM
     sp_r = SIDE_POCKET_RADIUS_MM
 
     if rail in ("LEFT", "RIGHT"):
-        # Valid y range
         if py < cp_r or py > table_height - cp_r:
             return False
-        # Exclude side pocket zone
         mid = table_height / 2.0
         if mid - sp_r <= py <= mid + sp_r:
             return False
-    else:  # TOP, BOTTOM
+    else:
         if px < cp_r or px > table_width - cp_r:
             return False
         mid = table_width / 2.0
@@ -159,28 +121,16 @@ def _is_contact_point_valid(
     return True
 
 
-# ---------------------------------------------------------------------------
-# Ray → pocket check
-# ---------------------------------------------------------------------------
-
 def _ray_hits_pocket(
     ox: float, oy: float,
     dx: float, dy: float,
     pocket: Pocket,
 ) -> bool:
-    """
-    Check if the ray starting at (ox, oy) in direction (dx, dy) passes
-    within POCKET_CAPTURE_RADIUS_MM of the pocket centre.
-    Only counts if the pocket is ahead of the ray (t > 0).
-    """
-    # Vector from ray origin to pocket centre
     tx = pocket.x - ox
     ty = pocket.y - oy
-    # Project onto ray direction
     t = tx * dx + ty * dy
     if t < 0:
         return False
-    # Closest point on ray to pocket centre
     cx = ox + t * dx
     cy = oy + t * dy
     dist = math.hypot(cx - pocket.x, cy - pocket.y)
@@ -192,26 +142,18 @@ def _ray_pocket_intersection(
     dx: float, dy: float,
     pockets: List[Pocket],
 ) -> Optional[Pocket]:
-    """
-    Return the first pocket the ray hits, or None.
-    """
     for pocket in pockets:
         if _ray_hits_pocket(ox, oy, dx, dy, pocket):
             return pocket
     return None
 
 
-# ---------------------------------------------------------------------------
-# Rail reflection
-# ---------------------------------------------------------------------------
-
 def _reflect_direction(
     dx: float, dy: float, rail: str
 ) -> Tuple[float, float]:
-    """Reflect direction vector off a rail."""
     if rail in ("LEFT", "RIGHT"):
         return (-dx, dy)
-    else:  # TOP, BOTTOM
+    else:
         return (dx, -dy)
 
 
@@ -222,10 +164,6 @@ def _ray_rail_intersection(
     table_width: float,
     table_height: float,
 ) -> Optional[Tuple[float, float]]:
-    """
-    Find where the ray (ox, oy, dx, dy) intersects the given rail wall.
-    Returns None if the ray moves away from that rail.
-    """
     EPS = 1e-9
     if rail == "LEFT":
         if dx >= -EPS:
@@ -239,7 +177,7 @@ def _ray_rail_intersection(
         if dy >= -EPS:
             return None
         t = -oy / dy
-    else:  # TOP
+    else:
         if dy <= EPS:
             return None
         t = (table_height - oy) / dy
@@ -249,49 +187,32 @@ def _ray_rail_intersection(
     return (ox + t * dx, oy + t * dy)
 
 
-# ---------------------------------------------------------------------------
-# Direct shot detection (SPEC §Feature 2 / v1)
-# ---------------------------------------------------------------------------
-
 def find_direct_shots(
     cue_ball: Ball,
     object_balls: List[Ball],
     pockets: List[Pocket],
     all_balls: List[Ball],
 ) -> List[DirectShot]:
-    """
-    For each object ball, check if the cue ball can reach it directly (no rail)
-    AND if the object ball can then travel directly into any pocket.
-    """
     results: List[DirectShot] = []
     cue_pos = (cue_ball.x, cue_ball.y)
 
     for obj in object_balls:
         obj_pos = (obj.x, obj.y)
-
-        # Step 1 — Can cue ball reach object ball?
         excluded = {cue_ball.id, obj.id}
         if not is_path_clear(cue_pos, obj_pos, all_balls, excluded):
             continue
 
-        # Direction cue→object (object ball departure direction after being struck)
         raw_dx = obj.x - cue_ball.x
         raw_dy = obj.y - cue_ball.y
         d = _vec_norm((raw_dx, raw_dy))
         if _vec_len(d) < 1e-9:
             continue
 
-        # Check each pocket: does the object ball travel directly to it?
         for pocket in pockets:
-            # Direction object→pocket
-            pd = _vec_norm((pocket.x - obj.x, pocket.y - obj.y))
-            # Alignment: cue→obj direction must point toward pocket
-            # Use ray from object in departure direction
             hit = _ray_hits_pocket(obj.x, obj.y, d[0], d[1], pocket)
             if not hit:
                 continue
 
-            # Obstruction check: object ball → pocket
             pkt_pos = (pocket.x, pocket.y)
             if not is_path_clear(obj_pos, pkt_pos, all_balls, excluded):
                 continue
@@ -309,14 +230,9 @@ def find_direct_shots(
                 pocket_id=pocket.id,  # type: ignore[arg-type]
             ))
 
-    # Direct shots are easiest (ease_score=0), sort stable by pocket id for determinism
     results.sort(key=lambda s: s.pocket_id)
     return results
 
-
-# ---------------------------------------------------------------------------
-# Bank shot detection (SPEC §Feature 2 / v1)
-# ---------------------------------------------------------------------------
 
 RAILS: List[RailId] = ["TOP", "BOTTOM", "LEFT", "RIGHT"]
 
@@ -329,29 +245,15 @@ def find_bank_shots(
     table_width: float,
     table_height: float,
 ) -> List[BankShot]:
-    """
-    For each (cue_ball, object_ball, rail) triple:
-      1. Check cue ball can reach object ball directly.
-      2. Compute object ball departure direction.
-      3. Find rail contact point using reflection.
-      4. Validate contact point (not in pocket zone).
-      5. Check reflected ray reaches a pocket.
-      6. Verify post-rail path is clear.
-
-    SPEC §2.2 Algorithm.
-    """
     results: List[BankShot] = []
     cue_pos = (cue_ball.x, cue_ball.y)
 
     for obj in object_balls:
         obj_pos = (obj.x, obj.y)
-
-        # Step 1 — cue ball → object ball must be clear
         excluded = {cue_ball.id, obj.id}
         if not is_path_clear(cue_pos, obj_pos, all_balls, excluded):
             continue
 
-        # Step 2 — departure direction (ghost-ball: cue→obj direction)
         raw = _vec_sub(obj_pos, cue_pos)
         d = _vec_norm(raw)
         if _vec_len(d) < 1e-9:
@@ -360,7 +262,6 @@ def find_bank_shots(
         dx, dy = d
 
         for rail in RAILS:
-            # Step 3 — find where object ball path hits this rail
             contact = _ray_rail_intersection(
                 obj.x, obj.y, dx, dy, rail, table_width, table_height
             )
@@ -368,29 +269,23 @@ def find_bank_shots(
                 continue
             px, py = contact
 
-            # Step 4 — contact point must be on valid cushion
             if not _is_contact_point_valid(px, py, rail, table_width, table_height):
                 continue
 
-            # Reflected direction
             rdx, rdy = _reflect_direction(dx, dy, rail)
 
-            # Compute bank angle (angle of incidence at the rail)
-            # Angle between incoming direction and the rail normal
-            if rail in ("LEFT", "RIGHT"):
-                normal = (1.0, 0.0)
-            else:
-                normal = (0.0, 1.0)
+            normal = (1.0, 0.0) if rail in ("LEFT", "RIGHT") else (0.0, 1.0)
             cos_angle = abs(dx * normal[0] + dy * normal[1])
             bank_angle_deg = math.degrees(math.acos(min(1.0, cos_angle)))
             ease_score = abs(bank_angle_deg - 90.0)
 
-            # Step 5 — does reflected ray reach a pocket?
+            # v2 Feature 4: Calculate cushion throw
+            throw_corr, adj_rebound = calculate_cushion_throw(bank_angle_deg)
+
             target_pocket = _ray_pocket_intersection(px, py, rdx, rdy, pockets)
             if target_pocket is None:
                 continue
 
-            # Step 6 — post-rail path must be clear
             pkt_pos = (target_pocket.x, target_pocket.y)
             if not is_path_clear((px, py), pkt_pos, all_balls, excluded):
                 continue
@@ -408,10 +303,11 @@ def find_bank_shots(
                     Point(x=target_pocket.x, y=target_pocket.y),
                 ],
                 bank_angle_deg=round(bank_angle_deg, 2),
+                throw_correction_deg=throw_corr,
+                adjusted_rebound_angle_deg=adj_rebound,
                 ease_score=round(ease_score, 2),
                 pocket_id=target_pocket.id,  # type: ignore[arg-type]
             ))
 
-    # Sort by ease_score ascending (closest to 90° first)
     results.sort(key=lambda s: s.ease_score)
     return results
