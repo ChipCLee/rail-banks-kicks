@@ -1,9 +1,9 @@
 """
 Pydantic data models for Rail-Kick API.
-Matches the TypeScript interfaces defined in SPEC.md §Data Models.
+Matches the TypeScript interfaces defined in SPEC.md §Data Models & §v2 Scope.
 """
 from __future__ import annotations
-from typing import Literal, List
+from typing import Literal, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -72,7 +72,24 @@ class BankShot(BaseModel):
     contact_point: Point        # where object ball hits the rail
     path: List[Point]           # [cue, object, rail_contact, pocket]
     bank_angle_deg: float       # angle of incidence at the rail
+    throw_correction_deg: Optional[float] = None
+    adjusted_rebound_angle_deg: Optional[float] = None
     ease_score: float           # |bank_angle_deg - 90| — lower is easier
+    pocket_id: PocketId
+
+
+class KickShot(BaseModel):
+    shot_type: Literal["one_rail_kick"] = "one_rail_kick"
+    cue_ball: Point
+    object_ball_id: str
+    object_ball_label: str
+    rail: RailId
+    contact_point: Point        # where cue ball hits the rail
+    diamond_label: str          # e.g. "2.5 diamonds from TL on TOP rail"
+    path: List[Point]           # [cue, rail_contact, object, pocket]
+    bank_angle_deg: float
+    throw_correction_deg: Optional[float] = None
+    ease_score: float
     pocket_id: PocketId
 
 
@@ -86,4 +103,5 @@ class AnalysisResult(BaseModel):
     balls: List[Ball]
     direct_shots: List[DirectShot]   # sorted by ease_score ascending
     bank_shots: List[BankShot]       # sorted by ease_score ascending
+    kick_shots: List[KickShot] = Field(default_factory=list) # sorted by ease_score ascending
     annotated_image_b64: str         # base64-encoded JPEG of annotated top-down image

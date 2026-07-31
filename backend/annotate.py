@@ -1,13 +1,14 @@
 """
 Image annotation module for Rail-Kick.
 
-Draws visual overlays on top-down warped table image according to SPEC.md §2.4:
+Draws visual overlays on top-down warped table image according to SPEC.md §2.4 & §3.5:
   - Cue ball: White circle outline + label "CUE"
   - Object balls: Color-matched outline + label
   - Cue → object path: Blue solid arrow
   - Object → rail contact: Orange dashed arrow
   - Rail contact → pocket: Green dashed arrow
   - Rail contact point: White filled dot
+  - Kick shot: Blue solid arrow (cue→rail), Orange solid arrow (rail→obj), Green dashed (obj→pocket), Blue diamond marker
   - Target pocket: Purple ring
 """
 from __future__ import annotations
@@ -18,17 +19,18 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from models import Ball, Pocket, DirectShot, BankShot, TableDims
+from models import Ball, Pocket, DirectShot, BankShot, KickShot, TableDims
 
 
 # Color palette in BGR
 COLOR_WHITE = (255, 255, 255)
 COLOR_BLACK = (0, 0, 0)
-COLOR_BLUE_ARROW = (235, 130, 0)      # Cue → Object (Blue in RGB -> BGR)
-COLOR_ORANGE_ARROW = (0, 140, 255)    # Object → Rail (Orange in BGR)
-COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket (Green in BGR)
+COLOR_BLUE_ARROW = (235, 130, 0)      # Cue → Object / Cue → Rail (Blue in RGB -> BGR)
+COLOR_ORANGE_ARROW = (0, 140, 255)    # Object → Rail / Rail → Object (Orange in BGR)
+COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket / Object → Pocket (Green in BGR)
 COLOR_YELLOW_TARGET = (0, 215, 255)   # Target ball highlight
 COLOR_PURPLE_POCKET = (211, 0, 148)   # Target pocket highlight
+COLOR_DIAMOND_BLUE = (255, 191, 0)    # Diamond marker icon (Deep cyan/blue in BGR)
 
 
 def _mm_to_px(x_mm: float, y_mm: float, dims: TableDims, img_shape: Tuple[int, int, int]) -> Tuple[int, int]:
@@ -65,6 +67,18 @@ def _draw_dashed_line(
         drawing = not drawing
 
 
+def _draw_diamond_marker(img: np.ndarray, pt: Tuple[int, int], size: int = 8):
+    """Draw a diamond shape icon on contact point for kick shots."""
+    pts = np.array([
+        [pt[0], pt[1] - size],
+        [pt[0] + size, pt[1]],
+        [pt[0], pt[1] + size],
+        [pt[0] - size, pt[1]],
+    ], np.int32)
+    cv2.fillPoly(img, [pts], COLOR_DIAMOND_BLUE, cv2.LINE_AA)
+    cv2.polylines(img, [pts], True, COLOR_WHITE, 1, cv2.LINE_AA)
+
+
 def annotate_table(
     warped: np.ndarray,
     dims: TableDims,
@@ -72,11 +86,15 @@ def annotate_table(
     balls: List[Ball],
     direct_shots: List[DirectShot],
     bank_shots: List[BankShot],
+    kick_shots: Optional[List[KickShot]] = None,
     selected_shot_index: Optional[int] = 0,
 ) -> str:
     """
     Annotate warped image and return base64 JPEG string.
     """
+    if kick_shots is None:
+        kick_shots = []
+
     img = warped.copy()
 
     # Draw pockets
@@ -99,8 +117,8 @@ def annotate_table(
             cv2.circle(img, bpx, r_px, color, 2, cv2.LINE_AA)
             cv2.putText(img, ball.label, (bpx[0] - 18, bpx[1] + r_px + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
 
-    # Draw selected shot if available
-    all_shots = list(direct_shots) + list(bank_shots)
+    # Combine all shots
+    all_shots = list(direct_shots) + list(bank_shots) + list(kick_shots)
     if all_shots and selected_shot_index is not None and 0 <= selected_shot_index < len(all_shots):
         shot = all_shots[selected_shot_index]
         
@@ -131,6 +149,15 @@ def annotate_table(
             # Rail contact point
             cv2.circle(img, pts_px[2], 5, COLOR_WHITE, -1, cv2.LINE_AA)
             # Rail -> Pocket
+            _draw_dashed_line(img, pts_px[2], pts_px[3], COLOR_GREEN_ARROW, 2)
+        elif shot.shot_type == "one_rail_kick" and len(pts_px) >= 4:
+            # Cue -> Rail
+            cv2.arrowedLine(img, pts_px[0], pts_px[1], COLOR_BLUE_ARROW, 2, cv2.LINE_AA)
+            # Rail -> Obj
+            cv2.arrowedLine(img, pts_px[1], pts_px[2], COLOR_ORANGE_ARROW, 2, cv2.LINE_AA)
+            # Diamond marker
+            _draw_diamond_marker(img, pts_px[1], size=8)
+            # Obj -> Pocket
             _draw_dashed_line(img, pts_px[2], pts_px[3], COLOR_GREEN_ARROW, 2)
 
     # Encode JPEG

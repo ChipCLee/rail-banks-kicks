@@ -18,6 +18,7 @@ from PIL import Image
 from models import AnalysisResult
 from cv_module import analyse_image
 from geometry import find_direct_shots, find_bank_shots
+from v2_kick_shots import find_kick_shots
 from annotate import annotate_table
 
 app = FastAPI(
@@ -95,9 +96,10 @@ async def analyze_table_image(image: UploadFile = File(...)):
     # Detect shots
     direct_shots = find_direct_shots(cue_ball, object_balls, pockets, balls)
     bank_shots = find_bank_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
+    kick_shots = find_kick_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
 
     # Annotate image
-    b64_img = annotate_table(warped, dims, pockets, balls, direct_shots, bank_shots, selected_shot_index=0)
+    b64_img = annotate_table(warped, dims, pockets, balls, direct_shots, bank_shots, kick_shots, selected_shot_index=0)
 
     return AnalysisResult(
         table_dims_mm=dims,
@@ -105,5 +107,6 @@ async def analyze_table_image(image: UploadFile = File(...)):
         balls=balls,
         direct_shots=direct_shots,
         bank_shots=bank_shots,
+        kick_shots=kick_shots,
         annotated_image_b64=b64_img,
     )
