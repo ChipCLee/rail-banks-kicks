@@ -92,9 +92,10 @@ async def analyze_table_image(
     balls = cv_res["balls"]
     warped = cv_res["warped"]
     cue_detected = cv_res["cue_detected"]
+    is_portrait = cv_res.get("is_portrait", False)
 
-    # 1. Render clean 2D CV Detection Diagram (balls, pockets, diamonds, NO shot lines)
-    cv_diagram_b64 = render_2d_cv_diagram(warped, dims, pockets, balls, diamonds)
+    # 1. Render clean 2D CV Detection Diagram matching original image orientation
+    cv_diagram_b64 = render_2d_cv_diagram(warped, dims, pockets, balls, diamonds, is_portrait=is_portrait)
 
     cue_ball = next((b for b in balls if b.id == "cue"), None)
 
@@ -110,6 +111,7 @@ async def analyze_table_image(
             kick_shots=[],
             diamonds=diamonds,
             selected_shot_index=None,
+            is_portrait=is_portrait,
         )
         return AnalysisResult(
             table_dims_mm=dims,
@@ -131,7 +133,7 @@ async def analyze_table_image(
     bank_shots = find_bank_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
     kick_shots = find_kick_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
 
-    # Annotate image with active shot trajectories
+    # Annotate image with active shot trajectories matching original image orientation
     b64_img = annotate_table(
         warped,
         dims,
@@ -142,6 +144,7 @@ async def analyze_table_image(
         kick_shots,
         diamonds=diamonds,
         selected_shot_index=0,
+        is_portrait=is_portrait,
     )
 
     return AnalysisResult(

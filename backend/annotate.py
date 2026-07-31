@@ -93,17 +93,17 @@ def render_2d_cv_diagram(
     pockets: List[Pocket],
     balls: List[Ball],
     diamonds: List[DiamondMarker],
+    is_portrait: bool = False,
 ) -> str:
     """
     Render a clean 2D overhead vector schematic of a 9ft Simonis 860 Tournament Blue table.
-    Shows the exact top-down playbook layout with detected balls, pockets, and rail diamonds.
+    Matches the orientation (portrait vs landscape) of the original uploaded photo.
     """
-    # Canvas dimensions with 50px rail cushion margins
     margin = 50
     pf_w = 1016
     pf_h = 508
     canvas_w = pf_w + 2 * margin
-    canvas_h = pf_h + 2 * margin + 30 # +30 for header bar
+    canvas_h = pf_h + 2 * margin + 30
 
     img = np.full((canvas_h, canvas_w, 3), COLOR_RAIL_WOOD, dtype=np.uint8)
 
@@ -116,13 +116,12 @@ def render_2d_cv_diagram(
     cv2.rectangle(img, (pf_x1, pf_y1), (pf_x2, pf_y2), COLOR_SIMONIS_BLUE, -1)
     cv2.rectangle(img, (pf_x1, pf_y1), (pf_x2, pf_y2), COLOR_CUSHION_BORDER, 3)
 
-    # Convert mm to diagram canvas coordinates
     def mm_to_canvas(x_mm: float, y_mm: float) -> Tuple[int, int]:
         c_x = int(pf_x1 + (x_mm / dims.width) * pf_w)
         c_y = int(pf_y2 - (y_mm / dims.height) * pf_h)
         return (c_x, c_y)
 
-    # 2. Draw Head String Line & Spots (Head spot, Foot spot)
+    # 2. Draw Head String Line & Spots
     hs_x = int(pf_x1 + (635.0 / dims.width) * pf_w)
     _draw_dashed_line(img, (hs_x, pf_y1), (hs_x, pf_y2), (255, 255, 255), thickness=1, dash_len=8)
 
@@ -173,8 +172,12 @@ def render_2d_cv_diagram(
 
     # 6. Top Header Banner
     cv2.rectangle(img, (0, 0), (canvas_w, 30), (15, 20, 30), -1)
-    header_text = f"Overhead 2D Schematic (9ft Simonis 860 Tournament Blue) | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
+    header_text = f"Overhead 2D Schematic (9ft Simonis 860 Blue) | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
     cv2.putText(img, header_text, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
+
+    # Match original image orientation: rotate 90° if uploaded picture is portrait
+    if is_portrait:
+        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     # Encode JPEG
     _, buffer = cv2.imencode(".jpg", img)
@@ -191,9 +194,11 @@ def annotate_table(
     kick_shots: Optional[List[KickShot]] = None,
     diamonds: Optional[List[DiamondMarker]] = None,
     selected_shot_index: Optional[int] = 0,
+    is_portrait: bool = False,
 ) -> str:
     """
     Annotate warped image with calculated shot paths and return base64 JPEG string.
+    Matches the orientation (portrait vs landscape) of the original uploaded photo.
     """
     if kick_shots is None:
         kick_shots = []
@@ -282,6 +287,10 @@ def annotate_table(
             _draw_diamond_marker(img, pts_px[1], size=8)
             # Obj -> Pocket
             _draw_dashed_line(img, pts_px[2], pts_px[3], COLOR_GREEN_ARROW, 2)
+
+    # Match original image orientation: rotate 90° if uploaded picture is portrait
+    if is_portrait:
+        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     # Encode JPEG
     _, buffer = cv2.imencode(".jpg", img)

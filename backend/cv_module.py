@@ -107,13 +107,17 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
 def detect_table_and_warp(
     image_bgr: np.ndarray,
     table_size: str = DEFAULT_TABLE,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims]]:
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
     """
     Detect table boundary and return:
       - warped: perspective-corrected top-down BGR image
       - H: homography matrix
       - dims: TableDims(width_mm, height_mm)
+      - is_portrait: bool matching original input image orientation
     """
+    img_h, img_w = image_bgr.shape[:2]
+    is_portrait = img_h > img_w
+
     config = TABLE_CONFIGS.get(table_size, TABLE_CONFIGS[DEFAULT_TABLE])
     w_mm = config["width_mm"]
     h_mm = config["height_mm"]
@@ -124,7 +128,7 @@ def detect_table_and_warp(
 
     contour = _detect_felt_contour(image_bgr)
     if contour is None:
-        return None, None, None
+        return None, None, None, is_portrait
 
     src_pts = _order_corners(contour)
     dst_pts = np.array([
@@ -136,11 +140,11 @@ def detect_table_and_warp(
 
     H, _ = cv2.findHomography(src_pts, dst_pts)
     if H is None:
-        return None, None, None
+        return None, None, None, is_portrait
 
     warped = cv2.warpPerspective(image_bgr, H, (w_px, h_px))
     dims = TableDims(width=w_mm, height=h_mm)
-    return warped, H, dims
+    return warped, H, dims, is_portrait
 
 
 def build_pocket_list(dims: TableDims) -> List[Pocket]:
@@ -372,7 +376,7 @@ def analyse_image(
     manual_cue_y: Optional[float] = None,
     manual_cue_ball_id: Optional[str] = None,
 ) -> Optional[dict]:
-    warped, H, dims = detect_table_and_warp(image_bgr)
+    warped, H, dims, is_portrait = detect_table_and_warp(image_bgr)
     if warped is None or dims is None:
         return None
 
@@ -463,4 +467,5 @@ def analyse_image(
         "balls": balls,
         "cue_detected": cue_detected,
         "warped": warped,
+        "is_portrait": is_portrait,
     }
