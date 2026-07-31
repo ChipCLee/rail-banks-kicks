@@ -5,7 +5,8 @@ Implements:
   1. Table boundary detection (green felt HSV masking → homography)
   2. Ball detection (Gaussian blur + HoughCircles)
   3. Ball classification (HSV color profiling with support for red-dot / measles cue balls)
-  4. Perspective-corrected top-down image output
+  4. Diamond marker generation (for rails)
+  5. Perspective-corrected top-down image output + Teach Mode fallback
 
 All measurements are in mm in table space.
 SPEC.md §Feature 1 – Ball Position Analysis.
@@ -18,7 +19,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from models import Ball, Pocket, TableDims
+from models import Ball, Pocket, DiamondMarker, TableDims
 
 # ---------------------------------------------------------------------------
 # Table dimensions (SPEC §1.2 Step 1)
@@ -48,12 +49,10 @@ def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
     """
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
 
-    # Green felt HSV range — covers typical billiard cloth
     lower1 = np.array([35, 40, 30])
     upper1 = np.array([95, 255, 220])
     mask = cv2.inRange(hsv, lower1, upper1)
 
-    # Morphological cleanup
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -62,15 +61,11 @@ def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
     if not contours:
         return None
 
-    # Largest contour → table boundary
     largest = max(contours, key=cv2.contourArea)
-
-    # Approximate to a quadrilateral
     peri = cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
     if len(approx) != 4:
-        # Fall back: use bounding rect corners
         rect = cv2.minAreaRect(largest)
         box = cv2.boxPoints(rect)
         approx = box.reshape(-1, 1, 2).astype(np.float32)
@@ -79,19 +74,17 @@ def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
 
 
 def _order_corners(pts: np.ndarray) -> np.ndarray:
-    """
-    Order 4 corner points as [TL, TR, BR, BL] (clockwise from top-left).
-    """
+    """Order 4 corner points as [TL, TR, BR, BL] (clockwise from top-left)."""
     pts = pts.reshape(4, 2).astype(np.float32)
     rect = np.zeros((4, 2), dtype=np.float32)
 
     s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]   # TL (smallest x+y)
-    rect[2] = pts[np.argmax(s)]   # BR (largest x+y)
+    rect[0] = pts[np.argmin(s)]   # TL
+    rect[2] = pts[np.argmax(s)]   # BR
 
     diff = np.diff(pts, axis=1).ravel()
-    rect[1] = pts[np.argmin(diff)]  # TR (smallest y-x)
-    rect[3] = pts[np.argmax(diff)]  # BL (largest y-x)
+    rect[1] = pts[np.argmin(diff)]  # TR
+    rect[3] = pts[np.argmax(diff)]  # BL
 
     return rect
 
@@ -103,16 +96,13 @@ def detect_table_and_warp(
     """
     Detect table boundary and return:
       - warped: perspective-corrected top-down BGR image
-      - H: homography matrix (image → table mm space)
+      - H: homography matrix
       - dims: TableDims(width_mm, height_mm)
-
-    Returns (None, None, None) if no table found.
     """
     config = TABLE_CONFIGS.get(table_size, TABLE_CONFIGS[DEFAULT_TABLE])
     w_mm = config["width_mm"]
     h_mm = config["height_mm"]
 
-    # Render resolution: 4 px per mm
     px_per_mm = 4.0
     w_px = int(w_mm * px_per_mm)
     h_px = int(h_mm * px_per_mm)
@@ -139,10 +129,7 @@ def detect_table_and_warp(
 
 
 def build_pocket_list(dims: TableDims) -> List[Pocket]:
-    """
-    Build the six standard pocket positions in mm table space.
-    Origin (0,0) = bottom-left corner.
-    """
+    """Build six pocket positions in table mm space."""
     w = dims.width
     h = dims.height
     return [
@@ -155,24 +142,46 @@ def build_pocket_list(dims: TableDims) -> List[Pocket]:
     ]
 
 
+def build_diamond_list(dims: TableDims) -> List[DiamondMarker]:
+    """
+    Build the list of diamond markers along the 4 rails.
+    - Long rails (TOP, BOTTOM): 7 diamonds (numbers 1, 2, 3, 4(side), 3, 2, 1)
+    - Short rails (LEFT, RIGHT): 3 diamonds (numbers 1, 2, 3)
+    """
+    w = dims.width
+    h = dims.height
+    diamonds: List[DiamondMarker] = []
+
+    # TOP & BOTTOM rails (8 segments -> 7 diamonds)
+    seg_w = w / 8.0
+    for i in range(1, 8):
+        x_pos = round(i * seg_w, 1)
+        num = i * 0.5 if i <= 4 else (8 - i) * 0.5
+        diamonds.append(DiamondMarker(rail="TOP", number=num, x=x_pos, y=h, label=f"{num} TOP"))
+        diamonds.append(DiamondMarker(rail="BOTTOM", number=num, x=x_pos, y=0.0, label=f"{num} BTM"))
+
+    # LEFT & RIGHT rails (4 segments -> 3 diamonds)
+    seg_h = h / 4.0
+    for i in range(1, 4):
+        y_pos = round(i * seg_h, 1)
+        diamonds.append(DiamondMarker(rail="LEFT", number=float(i), x=0.0, y=y_pos, label=f"{i} LEFT"))
+        diamonds.append(DiamondMarker(rail="RIGHT", number=float(i), x=w, y=y_pos, label=f"{i} RIGHT"))
+
+    return diamonds
+
+
 # ---------------------------------------------------------------------------
 # Step 2 – Ball Detection
 # ---------------------------------------------------------------------------
 
 def _px_per_mm_from_warped(warped: np.ndarray, dims: TableDims) -> float:
-    """Compute pixel-per-mm ratio from the warped image dimensions."""
-    img_w = warped.shape[1]
-    return img_w / dims.width
+    return warped.shape[1] / dims.width
 
 
 def detect_balls_on_warped(
     warped: np.ndarray,
     dims: TableDims,
 ) -> List[Tuple[float, float, float]]:
-    """
-    Run HoughCircles on the warped image.
-    Returns list of (x_mm, y_mm, radius_mm) for each detected ball.
-    """
     px_mm = _px_per_mm_from_warped(warped, dims)
     expected_r_px = BALL_RADIUS_MM * px_mm
 
@@ -200,7 +209,7 @@ def detect_balls_on_warped(
         h_px = warped.shape[0]
         for (cx_px, cy_px, r_px) in circles:
             x_mm = cx_px / px_mm
-            y_mm = (h_px - cy_px) / px_mm   # flip y: image top = table height
+            y_mm = (h_px - cy_px) / px_mm
             r_mm = r_px / px_mm
             results.append((x_mm, y_mm, r_mm))
     return results
@@ -217,12 +226,11 @@ _HUE_BUCKETS = [
     (35,  85,  "green"),
     (85,  130, "blue"),
     (130, 160, "purple"),
-    (160, 180, "red"),   # wraps back to red
+    (160, 180, "red"),
 ]
 
 
 def _dominant_hue_name(hsv_roi: np.ndarray) -> str:
-    """Return the dominant hue bucket name from an HSV ROI."""
     if hsv_roi.size == 0:
         return "unknown"
     hue_channel = hsv_roi[:, :, 0].ravel()
@@ -237,11 +245,6 @@ def _dominant_hue_name(hsv_roi: np.ndarray) -> str:
 
 
 def get_ball_white_ratio(roi: np.ndarray) -> float:
-    """
-    Calculate the ratio of white/near-white pixels in a ball ROI.
-    White pixel defined as V > 140 and S < 75.
-    Cue balls (even measles red-dot balls) have > 65% white ratio.
-    """
     if roi.size == 0:
         return 0.0
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -257,11 +260,6 @@ def classify_ball(
     cy_px: int,
     r_px: int,
 ) -> str:
-    """
-    Classify a single ball ROI by its colour profile.
-    Supports pure white cue balls as well as Aramith-style measles cue balls with red dots.
-    Returns label: "cue" | "eight" | "solid-<hue>" | "stripe-<hue>"
-    """
     x1 = max(0, cx_px - r_px)
     y1 = max(0, cy_px - r_px)
     x2 = min(warped.shape[1], cx_px + r_px)
@@ -278,23 +276,15 @@ def classify_ball(
     mean_v = float(np.mean(v))
 
     white_ratio = get_ball_white_ratio(roi)
-
-    # Check for red dots / spots (Aramith measles cue ball)
-    # Red dots have Hue in [0..10] or [160..180], S > 80, V > 100
     red_dots_mask = ((h <= 10) | (h >= 160)) & (s > 80) & (v > 100)
     red_dots_ratio = float(np.sum(red_dots_mask)) / red_dots_mask.size
 
-    # Cue ball detection:
-    # 1. Pure white cue ball: high white_ratio (> 0.65) and low red_dots_ratio (< 0.15)
-    # 2. Red-dot / measles cue ball: high white_ratio (> 0.65) with small red dots (red_dots_ratio < 0.15)
     if white_ratio >= 0.65 and red_dots_ratio < 0.15:
         return "cue"
 
-    # 8-ball: dark overall
     if mean_v < 70 and white_ratio < 0.15:
         return "eight"
 
-    # Stripe ball: has moderate white area (top & bottom of ball), white_ratio typically 0.25 to 0.55
     white_mask = (v > 140) & (s < 75)
     non_white_hsv = hsv[~white_mask] if np.sum(~white_mask) > 0 else hsv
     hue_name = _dominant_hue_name(non_white_hsv)
@@ -305,33 +295,26 @@ def classify_ball(
 
 
 # ---------------------------------------------------------------------------
-# Step 4 – Coordinate output + full detection pipeline
+# Step 4 – Full detection pipeline + Teach Mode support
 # ---------------------------------------------------------------------------
 
-def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
-    """
-    Full pipeline:
-      1. Detect table + warp
-      2. Detect balls
-      3. Classify balls (with fallback for cue ball with red dots)
-      4. Return dict with dims, pockets, balls, warped_image
-
-    Returns None if no table detected.
-    """
+def analyse_image(
+    image_bgr: np.ndarray,
+    manual_cue_x: Optional[float] = None,
+    manual_cue_y: Optional[float] = None,
+    manual_cue_ball_id: Optional[str] = None,
+) -> Optional[dict]:
     warped, H, dims = detect_table_and_warp(image_bgr)
     if warped is None or dims is None:
         return None
 
     pockets = build_pocket_list(dims)
+    diamonds = build_diamond_list(dims)
     raw_balls = detect_balls_on_warped(warped, dims)
 
     px_mm = _px_per_mm_from_warped(warped, dims)
     h_px = warped.shape[0]
 
-    balls: List[Ball] = []
-    ball_rois: List[Tuple[str, float, float, float, float]] = [] # (ball_id_candidate, label, x_mm, y_mm, r_mm, white_ratio)
-    
-    obj_counter = 0
     candidate_balls = []
 
     for (x_mm, y_mm, r_mm) in raw_balls:
@@ -356,22 +339,48 @@ def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
             "white_ratio": w_ratio,
         })
 
-    # If no cue ball was labeled via strict threshold, assign cue ball to the ball with highest white_ratio
-    cue_indices = [i for i, b in enumerate(candidate_balls) if b["label"] == "cue"]
-    if not cue_indices and candidate_balls:
-        # Highest white ratio ball is the cue ball
-        best_cue_idx = int(np.argmax([b["white_ratio"] for b in candidate_balls]))
-        candidate_balls[best_cue_idx]["label"] = "cue"
-        cue_indices = [best_cue_idx]
+    # Manual Cue Ball Override / Teach Mode handling:
+    cue_detected = True
 
-    # If multiple balls labeled as cue, keep only the one with the highest white_ratio
-    if len(cue_indices) > 1:
-        best_cue_idx = max(cue_indices, key=lambda i: candidate_balls[i]["white_ratio"])
-        for i in cue_indices:
-            if i != best_cue_idx:
-                candidate_balls[i]["label"] = "stripe-red"  # fallback
+    if manual_cue_ball_id is not None:
+        # User selected an existing detected ball to be the cue ball
+        for i, b in enumerate(candidate_balls):
+            if f"obj{i+1}" == manual_cue_ball_id or manual_cue_ball_id == "cue":
+                b["label"] = "cue"
+    elif manual_cue_x is not None and manual_cue_y is not None:
+        # User tapped coordinates to create/place cue ball
+        candidate_balls = [b for b in candidate_balls if b["label"] != "cue"]
+        candidate_balls.append({
+            "x_mm": round(manual_cue_x, 1),
+            "y_mm": round(manual_cue_y, 1),
+            "r_mm": BALL_RADIUS_MM,
+            "label": "cue",
+            "white_ratio": 1.0,
+        })
+    else:
+        # Automatic cue ball identification
+        cue_indices = [i for i, b in enumerate(candidate_balls) if b["label"] == "cue"]
+        if not cue_indices:
+            # Check if any ball has high white ratio (> 0.55)
+            high_white_indices = [i for i, b in enumerate(candidate_balls) if b["white_ratio"] > 0.55]
+            if high_white_indices:
+                best_idx = max(high_white_indices, key=lambda i: candidate_balls[i]["white_ratio"])
+                candidate_balls[best_idx]["label"] = "cue"
+            else:
+                # Cue ball not detected! Enable Teach Mode
+                cue_detected = False
+
+    # Ensure at most one cue ball
+    final_cue_indices = [i for i, b in enumerate(candidate_balls) if b["label"] == "cue"]
+    if len(final_cue_indices) > 1:
+        best_idx = max(final_cue_indices, key=lambda i: candidate_balls[i]["white_ratio"])
+        for i in final_cue_indices:
+            if i != best_idx:
+                candidate_balls[i]["label"] = "stripe-red"
 
     # Assemble final Ball list
+    balls: List[Ball] = []
+    obj_counter = 0
     for b in candidate_balls:
         if b["label"] == "cue":
             ball_id = "cue"
@@ -390,6 +399,8 @@ def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
     return {
         "dims": dims,
         "pockets": pockets,
+        "diamonds": diamonds,
         "balls": balls,
+        "cue_detected": cue_detected,
         "warped": warped,
     }

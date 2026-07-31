@@ -47,6 +47,18 @@ class Pocket(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Diamond Marker
+# ---------------------------------------------------------------------------
+
+class DiamondMarker(BaseModel):
+    rail: Literal["TOP", "BOTTOM", "LEFT", "RIGHT"]
+    number: float       # 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5 ...
+    x: float            # mm
+    y: float            # mm
+    label: str          # e.g. "2.5 TOP"
+
+
+# ---------------------------------------------------------------------------
 # Shots
 # ---------------------------------------------------------------------------
 
@@ -100,8 +112,10 @@ class KickShot(BaseModel):
 class AnalysisResult(BaseModel):
     table_dims_mm: TableDims
     pockets: List[Pocket]
+    diamonds: List[DiamondMarker] = Field(default_factory=list)
     balls: List[Ball]
-    direct_shots: List[DirectShot]   # sorted by ease_score ascending
-    bank_shots: List[BankShot]       # sorted by ease_score ascending
-    kick_shots: List[KickShot] = Field(default_factory=list) # sorted by ease_score ascending
-    annotated_image_b64: str         # base64-encoded JPEG of annotated top-down image
+    cue_detected: bool = True
+    direct_shots: List[DirectShot] = Field(default_factory=list)
+    bank_shots: List[BankShot] = Field(default_factory=list)
+    kick_shots: List[KickShot] = Field(default_factory=list)
+    annotated_image_b64: str         # base64-encoded JPEG

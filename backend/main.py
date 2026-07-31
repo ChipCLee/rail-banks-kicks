@@ -2,15 +2,16 @@
 FastAPI application for Rail-Kick pool table shot analysis.
 
 Provides REST endpoint:
-  POST /analyze  - Upload pool table image, returns AnalysisResult JSON
+  POST /analyze  - Upload pool table image (with optional manual cue ball override),
+                   returns AnalysisResult JSON (supporting Teach Mode when cue ball is missing)
   GET /health    - Healthcheck endpoint
 """
 from __future__ import annotations
 
 import io
-from fastapi import FastAPI, File, UploadFile, HTTPException, status
+from typing import Optional
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import cv2
 import numpy as np
 from PIL import Image
@@ -23,11 +24,10 @@ from annotate import annotate_table
 
 app = FastAPI(
     title="Rail-Kick API",
-    description="Pool table shot detection backend API",
+    description="Pool table shot detection backend API with Teach Mode support",
     version="0.6.0",
 )
 
-# Enable CORS for web frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,7 +46,12 @@ def healthcheck():
 
 
 @app.post("/analyze", response_model=AnalysisResult)
-async def analyze_table_image(image: UploadFile = File(...)):
+async def analyze_table_image(
+    image: UploadFile = File(...),
+    manual_cue_x: Optional[float] = Form(None),
+    manual_cue_y: Optional[float] = Form(None),
+    manual_cue_ball_id: Optional[str] = Form(None),
+):
     if image.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -60,7 +65,6 @@ async def analyze_table_image(image: UploadFile = File(...)):
             detail="File size exceeds 20 MB limit.",
         )
 
-    # Decode image to BGR numpy array
     try:
         pil_img = Image.open(io.BytesIO(content)).convert("RGB")
         img_np = np.array(pil_img)[:, :, ::-1]  # RGB to BGR
@@ -70,8 +74,12 @@ async def analyze_table_image(image: UploadFile = File(...)):
             detail=f"Invalid image file: {str(err)}",
         )
 
-    # Run CV pipeline
-    cv_res = analyse_image(img_np)
+    cv_res = analyse_image(
+        img_np,
+        manual_cue_x=manual_cue_x,
+        manual_cue_y=manual_cue_y,
+        manual_cue_ball_id=manual_cue_ball_id,
+    )
     if cv_res is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -80,15 +88,36 @@ async def analyze_table_image(image: UploadFile = File(...)):
 
     dims = cv_res["dims"]
     pockets = cv_res["pockets"]
+    diamonds = cv_res["diamonds"]
     balls = cv_res["balls"]
     warped = cv_res["warped"]
+    cue_detected = cv_res["cue_detected"]
 
-    # Separate cue ball and object balls
     cue_ball = next((b for b in balls if b.id == "cue"), None)
-    if cue_ball is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Cue ball not detected on table.",
+
+    if not cue_detected or cue_ball is None:
+        # Teach Mode: Cue ball not detected automatically
+        b64_img = annotate_table(
+            warped,
+            dims,
+            pockets,
+            balls,
+            direct_shots=[],
+            bank_shots=[],
+            kick_shots=[],
+            diamonds=diamonds,
+            selected_shot_index=None,
+        )
+        return AnalysisResult(
+            table_dims_mm=dims,
+            pockets=pockets,
+            diamonds=diamonds,
+            balls=balls,
+            cue_detected=False,
+            direct_shots=[],
+            bank_shots=[],
+            kick_shots=[],
+            annotated_image_b64=b64_img,
         )
 
     object_balls = [b for b in balls if b.id != "cue"]
@@ -99,12 +128,24 @@ async def analyze_table_image(image: UploadFile = File(...)):
     kick_shots = find_kick_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
 
     # Annotate image
-    b64_img = annotate_table(warped, dims, pockets, balls, direct_shots, bank_shots, kick_shots, selected_shot_index=0)
+    b64_img = annotate_table(
+        warped,
+        dims,
+        pockets,
+        balls,
+        direct_shots,
+        bank_shots,
+        kick_shots,
+        diamonds=diamonds,
+        selected_shot_index=0,
+    )
 
     return AnalysisResult(
         table_dims_mm=dims,
         pockets=pockets,
+        diamonds=diamonds,
         balls=balls,
+        cue_detected=True,
         direct_shots=direct_shots,
         bank_shots=bank_shots,
         kick_shots=kick_shots,

@@ -2,6 +2,7 @@
 Image annotation module for Rail-Kick.
 
 Draws visual overlays on top-down warped table image according to SPEC.md §2.4 & §3.5:
+  - Rail diamonds: Small diamond markers + number labels on cushions
   - Cue ball: White circle outline + label "CUE"
   - Object balls: Color-matched outline + label
   - Cue → object path: Blue solid arrow
@@ -19,18 +20,19 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from models import Ball, Pocket, DirectShot, BankShot, KickShot, TableDims
+from models import Ball, Pocket, DiamondMarker, DirectShot, BankShot, KickShot, TableDims
 
 
 # Color palette in BGR
 COLOR_WHITE = (255, 255, 255)
 COLOR_BLACK = (0, 0, 0)
-COLOR_BLUE_ARROW = (235, 130, 0)      # Cue → Object / Cue → Rail (Blue in RGB -> BGR)
-COLOR_ORANGE_ARROW = (0, 140, 255)    # Object → Rail / Rail → Object (Orange in BGR)
-COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket / Object → Pocket (Green in BGR)
+COLOR_BLUE_ARROW = (235, 130, 0)      # Cue → Object / Cue → Rail
+COLOR_ORANGE_ARROW = (0, 140, 255)    # Object → Rail / Rail → Object
+COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket / Object → Pocket
 COLOR_YELLOW_TARGET = (0, 215, 255)   # Target ball highlight
 COLOR_PURPLE_POCKET = (211, 0, 148)   # Target pocket highlight
-COLOR_DIAMOND_BLUE = (255, 191, 0)    # Diamond marker icon (Deep cyan/blue in BGR)
+COLOR_DIAMOND_BLUE = (255, 191, 0)    # Diamond marker icon
+COLOR_RAIL_DIAMOND = (0, 200, 255)    # Rail diamond marker color (Yellow/Cyan)
 
 
 def _mm_to_px(x_mm: float, y_mm: float, dims: TableDims, img_shape: Tuple[int, int, int]) -> Tuple[int, int]:
@@ -67,15 +69,15 @@ def _draw_dashed_line(
         drawing = not drawing
 
 
-def _draw_diamond_marker(img: np.ndarray, pt: Tuple[int, int], size: int = 8):
-    """Draw a diamond shape icon on contact point for kick shots."""
+def _draw_diamond_marker(img: np.ndarray, pt: Tuple[int, int], size: int = 8, color=COLOR_DIAMOND_BLUE):
+    """Draw a diamond shape icon."""
     pts = np.array([
         [pt[0], pt[1] - size],
         [pt[0] + size, pt[1]],
         [pt[0], pt[1] + size],
         [pt[0] - size, pt[1]],
     ], np.int32)
-    cv2.fillPoly(img, [pts], COLOR_DIAMOND_BLUE, cv2.LINE_AA)
+    cv2.fillPoly(img, [pts], color, cv2.LINE_AA)
     cv2.polylines(img, [pts], True, COLOR_WHITE, 1, cv2.LINE_AA)
 
 
@@ -87,6 +89,7 @@ def annotate_table(
     direct_shots: List[DirectShot],
     bank_shots: List[BankShot],
     kick_shots: Optional[List[KickShot]] = None,
+    diamonds: Optional[List[DiamondMarker]] = None,
     selected_shot_index: Optional[int] = 0,
 ) -> str:
     """
@@ -94,13 +97,34 @@ def annotate_table(
     """
     if kick_shots is None:
         kick_shots = []
+    if diamonds is None:
+        diamonds = []
 
     img = warped.copy()
+
+    # Draw rail diamond markers
+    for d in diamonds:
+        dpx = _mm_to_px(d.x, d.y, dims, img.shape)
+        _draw_diamond_marker(img, dpx, size=5, color=COLOR_RAIL_DIAMOND)
+        # Small text label
+        offset_y = 12 if d.rail == "TOP" else -8 if d.rail == "BOTTOM" else 4
+        offset_x = 8 if d.rail == "LEFT" else -14 if d.rail == "RIGHT" else -6
+        cv2.putText(
+            img,
+            str(d.number),
+            (dpx[0] + offset_x, dpx[1] + offset_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            COLOR_WHITE,
+            1,
+            cv2.LINE_AA,
+        )
 
     # Draw pockets
     for pkt in pockets:
         ppx = _mm_to_px(pkt.x, pkt.y, dims, img.shape)
         cv2.circle(img, ppx, 12, (50, 50, 50), -1, cv2.LINE_AA)
+        cv2.putText(img, pkt.id, (ppx[0] - 8, ppx[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
 
     # Draw balls
     for ball in balls:

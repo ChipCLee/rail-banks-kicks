@@ -230,3 +230,20 @@ body {
   font-family: var(--font-heading);
   font-size: 1.25rem;
 }
+
+/* Teach Mode */
+.teach-mode-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.teach-banner {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--accent-yellow);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
