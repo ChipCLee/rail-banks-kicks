@@ -12,8 +12,8 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     const dims = result.table_dims_mm || { width: 2540.0, height: 1270.0 };
 
     // Aspect ratio & canvas size
-    const pfWidthMm = dims.width;
-    const pfHeightMm = dims.height;
+    const pfWidthMm = dims.width;   // 2540.0 mm (Long dimension)
+    const pfHeightMm = dims.height; // 1270.0 mm (Short dimension)
 
     // Base layout units
     const margin = 46;
@@ -45,7 +45,7 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     // Coordinate mapping (Table mm space -> Canvas px space)
     const mmToCanvas = (xMm, yMm) => {
       if (isPortrait) {
-        // Portrait: y-axis goes vertical (long: 0..2540), x-axis horizontal (short: 0..1270)
+        // Portrait: y-axis goes horizontal (short: 0..1270), x-axis goes vertical (long: 0..2540)
         const cX = pfX1 + (yMm / pfHeightMm) * pfW;
         const cY = pfY2 - (xMm / pfWidthMm) * pfH;
         return { x: cX, y: cY };
@@ -98,7 +98,23 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
       ctx.font = '10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(d.number), pt.x, pt.y + (d.rail === 'TOP' || d.rail === 'LEFT' ? -10 : 12));
+
+      let textX = pt.x;
+      let textY = pt.y;
+
+      if (isPortrait) {
+        if (d.rail === 'TOP') textX += 14;      // Right vertical long rail
+        else if (d.rail === 'BOTTOM') textX -= 14; // Left vertical long rail
+        else if (d.rail === 'RIGHT') textY -= 12;  // Top horizontal short rail
+        else if (d.rail === 'LEFT') textY += 12;   // Bottom horizontal short rail
+      } else {
+        if (d.rail === 'TOP') textY -= 12;      // Top horizontal long rail
+        else if (d.rail === 'BOTTOM') textY += 12; // Bottom horizontal long rail
+        else if (d.rail === 'LEFT') textX -= 14;   // Left vertical short rail
+        else if (d.rail === 'RIGHT') textX += 14;  // Right vertical short rail
+      }
+
+      ctx.fillText(String(d.number), textX, textY);
     });
 
     // 5. Draw 6 Pockets
@@ -200,7 +216,7 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
 
     // 7. Draw Detected Balls
     const balls = result.balls || [];
-    const ballR = isPortrait ? 11 : 11;
+    const ballR = 11;
 
     balls.forEach((ball) => {
       const pt = mmToCanvas(ball.x, ball.y);
@@ -262,7 +278,7 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(
-      `2D Diagram (9ft Simonis 860 Blue) | ${balls.length} Balls | Green Line: Cue→Target | Blue Line: Target→Pocket`,
+      `2D Diagram (9ft Simonis 860 Blue) | ${balls.length} Balls | Long Rails: 3 Pockets & 6 Diamonds | Short Rails: 2 Pockets & 3 Diamonds`,
       12,
       14
     );

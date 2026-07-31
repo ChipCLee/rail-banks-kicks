@@ -27,8 +27,8 @@ class TestCushionThrow(unittest.TestCase):
         self.assertAlmostEqual(adj_rebound, 45.0 - throw_corr, places=2)
 
     def test_bank_shot_includes_throw_fields(self):
-        cue = Ball(id="cue", label="cue", x=800.0, y=980.8)
-        obj = Ball(id="obj1", label="eight", x=1800.0, y=900.0)
+        cue = Ball(id="cue", label="cue", x=200.0, y=500.0)
+        obj = Ball(id="obj1", label="eight", x=1600.0, y=800.0)
         
         bank_shots = find_bank_shots(cue, [obj], POCKETS, [cue, obj], DIMS.width, DIMS.height)
         self.assertGreaterEqual(len(bank_shots), 1)

@@ -2,7 +2,7 @@
 Computer Vision module for Rail-Kick.
 
 Implements explicit CV rules:
-  1. Long rails have 3 pockets (Corner, Side, Corner) and 6 diamonds.
+  1. Long rails have 3 pockets (Corner, Middle Side, Corner) and 6 diamonds.
   2. Short rails have 2 pockets (Corner, Corner) and 3 diamonds.
   3. No ball is outside the table boundary.
   4. Once the table is identified, only focus on the table and ignore all background.
@@ -147,17 +147,17 @@ def detect_table_and_warp(
 def build_pocket_list(dims: TableDims) -> List[Pocket]:
     """
     Rule 1 & 2:
-    - Long rails have 3 pockets (Corner TL, Side ML, Corner BL; Corner TR, Side MR, Corner BR)
-    - Short rails have 2 pockets (Corner TL & TR on top; Corner BL & BR on bottom)
+    - Long rails (TOP y=h, BOTTOM y=0) have 3 pockets (Corner TL, Middle Side ML, Corner TR; Corner BL, Middle Side MR, Corner BR)
+    - Short rails (LEFT x=0, RIGHT x=w) have 2 corner pockets (no side pocket)
     Total: 6 pockets.
     """
-    w = dims.width
-    h = dims.height
+    w = dims.width   # 2540.0 mm (Long dimension)
+    h = dims.height  # 1270.0 mm (Short dimension)
     return [
         Pocket(id="TL", x=0.0,   y=h,    radius_mm=CORNER_POCKET_RADIUS_MM),
         Pocket(id="TR", x=w,     y=h,    radius_mm=CORNER_POCKET_RADIUS_MM),
-        Pocket(id="ML", x=0.0,   y=h/2,  radius_mm=SIDE_POCKET_RADIUS_MM),
-        Pocket(id="MR", x=w,     y=h/2,  radius_mm=SIDE_POCKET_RADIUS_MM),
+        Pocket(id="ML", x=w/2,   y=h,    radius_mm=SIDE_POCKET_RADIUS_MM), # Middle Side Pocket on TOP Long Rail
+        Pocket(id="MR", x=w/2,   y=0.0,  radius_mm=SIDE_POCKET_RADIUS_MM), # Middle Side Pocket on BOTTOM Long Rail
         Pocket(id="BL", x=0.0,   y=0.0,  radius_mm=CORNER_POCKET_RADIUS_MM),
         Pocket(id="BR", x=w,     y=0.0,  radius_mm=CORNER_POCKET_RADIUS_MM),
     ]
