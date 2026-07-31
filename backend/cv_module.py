@@ -4,7 +4,7 @@ Computer Vision module for Rail-Kick.
 Implements:
   1. Table boundary detection (green felt HSV masking → homography)
   2. Ball detection (Gaussian blur + HoughCircles)
-  3. Ball classification (HSV color profiling)
+  3. Ball classification (HSV color profiling with support for red-dot / measles cue balls)
   4. Perspective-corrected top-down image output
 
 All measurements are in mm in table space.
@@ -43,7 +43,7 @@ SIDE_POCKET_RADIUS_MM = 63.0
 
 def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
     """
-    Detect the largest green-felt region using HSV masking.
+    Detect the largest green-felt region using HSV color masking.
     Returns the 4-point approximated contour or None.
     """
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
@@ -199,8 +199,6 @@ def detect_balls_on_warped(
         circles = np.round(circles[0]).astype(int)
         h_px = warped.shape[0]
         for (cx_px, cy_px, r_px) in circles:
-            # Convert pixel → mm
-            # warped image: y=0 is TOP of image → table y=height (TL corner)
             x_mm = cx_px / px_mm
             y_mm = (h_px - cy_px) / px_mm   # flip y: image top = table height
             r_mm = r_px / px_mm
@@ -212,7 +210,6 @@ def detect_balls_on_warped(
 # Step 3 – Ball Classification
 # ---------------------------------------------------------------------------
 
-# HSV hue bucket names (0–360° mapped to 0–180 in OpenCV)
 _HUE_BUCKETS = [
     (0,   10,  "red"),
     (10,  25,  "orange"),
@@ -226,6 +223,8 @@ _HUE_BUCKETS = [
 
 def _dominant_hue_name(hsv_roi: np.ndarray) -> str:
     """Return the dominant hue bucket name from an HSV ROI."""
+    if hsv_roi.size == 0:
+        return "unknown"
     hue_channel = hsv_roi[:, :, 0].ravel()
     if len(hue_channel) == 0:
         return "unknown"
@@ -237,6 +236,21 @@ def _dominant_hue_name(hsv_roi: np.ndarray) -> str:
     return "red"
 
 
+def get_ball_white_ratio(roi: np.ndarray) -> float:
+    """
+    Calculate the ratio of white/near-white pixels in a ball ROI.
+    White pixel defined as V > 140 and S < 75.
+    Cue balls (even measles red-dot balls) have > 65% white ratio.
+    """
+    if roi.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    v = hsv[:, :, 2].astype(float)
+    s = hsv[:, :, 1].astype(float)
+    white_pixels = (v > 140) & (s < 75)
+    return float(np.sum(white_pixels)) / white_pixels.size
+
+
 def classify_ball(
     warped: np.ndarray,
     cx_px: int,
@@ -245,9 +259,9 @@ def classify_ball(
 ) -> str:
     """
     Classify a single ball ROI by its colour profile.
+    Supports pure white cue balls as well as Aramith-style measles cue balls with red dots.
     Returns label: "cue" | "eight" | "solid-<hue>" | "stripe-<hue>"
     """
-    # Extract circular ROI
     x1 = max(0, cx_px - r_px)
     y1 = max(0, cy_px - r_px)
     x2 = min(warped.shape[1], cx_px + r_px)
@@ -260,23 +274,30 @@ def classify_ball(
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     v = hsv[:, :, 2].astype(float)
     s = hsv[:, :, 1].astype(float)
+    h = hsv[:, :, 0].astype(float)
     mean_v = float(np.mean(v))
-    mean_s = float(np.mean(s))
 
-    # Cue ball: high brightness, low saturation
-    if mean_v > 180 and mean_s < 50:
+    white_ratio = get_ball_white_ratio(roi)
+
+    # Check for red dots / spots (Aramith measles cue ball)
+    # Red dots have Hue in [0..10] or [160..180], S > 80, V > 100
+    red_dots_mask = ((h <= 10) | (h >= 160)) & (s > 80) & (v > 100)
+    red_dots_ratio = float(np.sum(red_dots_mask)) / red_dots_mask.size
+
+    # Cue ball detection:
+    # 1. Pure white cue ball: high white_ratio (> 0.65) and low red_dots_ratio (< 0.15)
+    # 2. Red-dot / measles cue ball: high white_ratio (> 0.65) with small red dots (red_dots_ratio < 0.15)
+    if white_ratio >= 0.65 and red_dots_ratio < 0.15:
         return "cue"
 
-    # 8-ball: very dark
-    if mean_v < 70:
+    # 8-ball: dark overall
+    if mean_v < 70 and white_ratio < 0.15:
         return "eight"
 
-    # Stripes have a prominent white region (top/bottom of ball)
-    # Mask white pixels (high V, low S)
-    white_mask = (v > 160) & (s < 60)
-    white_ratio = float(np.sum(white_mask)) / white_mask.size
-
-    hue_name = _dominant_hue_name(hsv[~white_mask.astype(bool)] if white_ratio > 0.1 else hsv)
+    # Stripe ball: has moderate white area (top & bottom of ball), white_ratio typically 0.25 to 0.55
+    white_mask = (v > 140) & (s < 75)
+    non_white_hsv = hsv[~white_mask] if np.sum(~white_mask) > 0 else hsv
+    hue_name = _dominant_hue_name(non_white_hsv)
 
     if white_ratio > 0.25:
         return f"stripe-{hue_name}"
@@ -292,7 +313,7 @@ def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
     Full pipeline:
       1. Detect table + warp
       2. Detect balls
-      3. Classify balls
+      3. Classify balls (with fallback for cue ball with red dots)
       4. Return dict with dims, pockets, balls, warped_image
 
     Returns None if no table detected.
@@ -308,16 +329,51 @@ def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
     h_px = warped.shape[0]
 
     balls: List[Ball] = []
+    ball_rois: List[Tuple[str, float, float, float, float]] = [] # (ball_id_candidate, label, x_mm, y_mm, r_mm, white_ratio)
+    
     obj_counter = 0
+    candidate_balls = []
+
     for (x_mm, y_mm, r_mm) in raw_balls:
-        # Convert mm back to pixel for ROI extraction
         cx_px = int(x_mm * px_mm)
         cy_px = int(h_px - y_mm * px_mm)
         r_px  = int(r_mm * px_mm)
 
         label = classify_ball(warped, cx_px, cy_px, r_px)
 
-        if label == "cue":
+        x1 = max(0, cx_px - r_px)
+        y1 = max(0, cy_px - r_px)
+        x2 = min(warped.shape[1], cx_px + r_px)
+        y2 = min(warped.shape[0], cy_px + r_px)
+        roi = warped[y1:y2, x1:x2]
+        w_ratio = get_ball_white_ratio(roi)
+
+        candidate_balls.append({
+            "x_mm": round(x_mm, 1),
+            "y_mm": round(y_mm, 1),
+            "r_mm": round(r_mm, 2),
+            "label": label,
+            "white_ratio": w_ratio,
+        })
+
+    # If no cue ball was labeled via strict threshold, assign cue ball to the ball with highest white_ratio
+    cue_indices = [i for i, b in enumerate(candidate_balls) if b["label"] == "cue"]
+    if not cue_indices and candidate_balls:
+        # Highest white ratio ball is the cue ball
+        best_cue_idx = int(np.argmax([b["white_ratio"] for b in candidate_balls]))
+        candidate_balls[best_cue_idx]["label"] = "cue"
+        cue_indices = [best_cue_idx]
+
+    # If multiple balls labeled as cue, keep only the one with the highest white_ratio
+    if len(cue_indices) > 1:
+        best_cue_idx = max(cue_indices, key=lambda i: candidate_balls[i]["white_ratio"])
+        for i in cue_indices:
+            if i != best_cue_idx:
+                candidate_balls[i]["label"] = "stripe-red"  # fallback
+
+    # Assemble final Ball list
+    for b in candidate_balls:
+        if b["label"] == "cue":
             ball_id = "cue"
         else:
             obj_counter += 1
@@ -325,20 +381,11 @@ def analyse_image(image_bgr: np.ndarray) -> Optional[dict]:
 
         balls.append(Ball(
             id=ball_id,
-            label=label,
-            x=round(x_mm, 1),
-            y=round(y_mm, 1),
-            radius_mm=round(r_mm, 2),
+            label=b["label"],
+            x=b["x_mm"],
+            y=b["y_mm"],
+            radius_mm=b["r_mm"],
         ))
-
-    # Ensure at most one cue ball (keep the highest-brightness one if duplicates)
-    cue_balls = [b for b in balls if b.id == "cue"]
-    if len(cue_balls) > 1:
-        # Keep the first, relabel rest as solid-white fallback
-        for b in cue_balls[1:]:
-            b.id = f"obj{obj_counter}"
-            b.label = "solid-white"
-            obj_counter += 1
 
     return {
         "dims": dims,

@@ -149,7 +149,7 @@ Classify each detected ball by colour profile of the circular ROI. **Ball number
 
 | Ball Type | Colour Signature | Label Used in Output |
 |---|---|---|
-| Cue ball | High brightness, near-white HSV | `"cue"` |
+| Cue ball | High white/near-white surface ratio (≥65%), with or without red dots/markings (e.g. Aramith Pro-Cup measles ball) | `"cue"` |
 | Solid balls | Dominant single hue covering most of ROI | `"solid-<hue>"` e.g. `"solid-red"` |
 | Stripe balls | White body with a dominant hue band | `"stripe-<hue>"` e.g. `"stripe-blue"` |
 | 8-ball | Dark / near-black dominant | `"eight"` |
@@ -415,7 +415,7 @@ interface AnalysisResult {
 | C7 | **Kick shots** (cue ball off a rail before hitting the object ball) are out of scope for v1. |
 | C8 | Ball cushion compression, throw, squirt, and spin are **not modelled** in v1; pure geometric reflection is used. |
 | C9 | **Ball number recognition is out of scope.** Balls are identified by color/type only. |
-| C10 | The cue ball must be visually distinguishable (white or near-white). |
+| C10 | The cue ball must be visually distinguishable (white or near-white, with or without red dots/markings). |
 | C11 | A minimum of 2 balls (cue ball + at least one object ball) must be present on the table. |
 | C12 | Balls must not be completely overlapping in the image. |
 | C13 | The application runs in a **web browser**. No native app installation is required. |
