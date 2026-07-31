@@ -2,6 +2,7 @@
 Image annotation module for Rail-Kick.
 
 Draws visual overlays on top-down warped table image according to SPEC.md §2.4 & §3.5:
+  - 2D CV Detection Diagram: Clean top-down map of detected balls, pockets, and rail diamonds
   - Rail diamonds: Small diamond markers + number labels on cushions
   - Cue ball: White circle outline + label "CUE"
   - Object balls: Color-matched outline + label
@@ -32,7 +33,7 @@ COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket / Object → Pocket
 COLOR_YELLOW_TARGET = (0, 215, 255)   # Target ball highlight
 COLOR_PURPLE_POCKET = (211, 0, 148)   # Target pocket highlight
 COLOR_DIAMOND_BLUE = (255, 191, 0)    # Diamond marker icon
-COLOR_RAIL_DIAMOND = (0, 200, 255)    # Rail diamond marker color (Yellow/Cyan)
+COLOR_RAIL_DIAMOND = (0, 200, 255)    # Rail diamond marker color
 
 
 def _mm_to_px(x_mm: float, y_mm: float, dims: TableDims, img_shape: Tuple[int, int, int]) -> Tuple[int, int]:
@@ -81,6 +82,70 @@ def _draw_diamond_marker(img: np.ndarray, pt: Tuple[int, int], size: int = 8, co
     cv2.polylines(img, [pts], True, COLOR_WHITE, 1, cv2.LINE_AA)
 
 
+def render_2d_cv_diagram(
+    warped: np.ndarray,
+    dims: TableDims,
+    pockets: List[Pocket],
+    balls: List[Ball],
+    diamonds: List[DiamondMarker],
+) -> str:
+    """
+    Render clean 2D CV Detection Diagram showing ONLY identified balls, pockets, and rail diamonds.
+    Used for verifying computer vision accuracy before/separately from shot trajectory calculations.
+    """
+    img = warped.copy()
+
+    # Draw rail diamond markers
+    for d in diamonds:
+        dpx = _mm_to_px(d.x, d.y, dims, img.shape)
+        _draw_diamond_marker(img, dpx, size=6, color=COLOR_RAIL_DIAMOND)
+        offset_y = 14 if d.rail == "TOP" else -10 if d.rail == "BOTTOM" else 4
+        offset_x = 10 if d.rail == "LEFT" else -16 if d.rail == "RIGHT" else -6
+        cv2.putText(
+            img,
+            str(d.number),
+            (dpx[0] + offset_x, dpx[1] + offset_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            COLOR_WHITE,
+            1,
+            cv2.LINE_AA,
+        )
+
+    # Draw pockets
+    for pkt in pockets:
+        ppx = _mm_to_px(pkt.x, pkt.y, dims, img.shape)
+        cv2.circle(img, ppx, 14, (30, 30, 30), -1, cv2.LINE_AA)
+        cv2.circle(img, ppx, 14, COLOR_WHITE, 1, cv2.LINE_AA)
+        cv2.putText(img, pkt.id, (ppx[0] - 8, ppx[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
+
+    # Draw balls
+    for ball in balls:
+        bpx = _mm_to_px(ball.x, ball.y, dims, img.shape)
+        r_px = int((ball.radius_mm / dims.width) * img.shape[1])
+
+        if ball.label == "cue":
+            cv2.circle(img, bpx, r_px, COLOR_WHITE, -1, cv2.LINE_AA)
+            cv2.circle(img, bpx, r_px, COLOR_BLACK, 2, cv2.LINE_AA)
+            cv2.putText(img, "CUE", (bpx[0] - 14, bpx[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_BLACK, 1, cv2.LINE_AA)
+        else:
+            color = (0, 0, 255) if "red" in ball.label else (255, 100, 0) if "blue" in ball.label else (200, 200, 200)
+            if ball.label == "eight":
+                color = (30, 30, 30)
+            cv2.circle(img, bpx, r_px, color, -1, cv2.LINE_AA)
+            cv2.circle(img, bpx, r_px, COLOR_WHITE, 2, cv2.LINE_AA)
+            cv2.putText(img, ball.label, (bpx[0] - 18, bpx[1] + r_px + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
+
+    # Top banner header on 2D diagram
+    cv2.rectangle(img, (0, 0), (img.shape[1], 28), (15, 20, 30), -1)
+    header_text = f"2D CV Detection Map | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
+    cv2.putText(img, header_text, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
+
+    # Encode JPEG
+    _, buffer = cv2.imencode(".jpg", img)
+    return base64.b64encode(buffer).decode("utf-8")
+
+
 def annotate_table(
     warped: np.ndarray,
     dims: TableDims,
@@ -93,7 +158,7 @@ def annotate_table(
     selected_shot_index: Optional[int] = 0,
 ) -> str:
     """
-    Annotate warped image and return base64 JPEG string.
+    Annotate warped image with calculated shot paths and return base64 JPEG string.
     """
     if kick_shots is None:
         kick_shots = []
@@ -106,7 +171,6 @@ def annotate_table(
     for d in diamonds:
         dpx = _mm_to_px(d.x, d.y, dims, img.shape)
         _draw_diamond_marker(img, dpx, size=5, color=COLOR_RAIL_DIAMOND)
-        # Small text label
         offset_y = 12 if d.rail == "TOP" else -8 if d.rail == "BOTTOM" else 4
         offset_x = 8 if d.rail == "LEFT" else -14 if d.rail == "RIGHT" else -6
         cv2.putText(
@@ -186,5 +250,4 @@ def annotate_table(
 
     # Encode JPEG
     _, buffer = cv2.imencode(".jpg", img)
-    b64_str = base64.b64encode(buffer).decode("utf-8")
-    return b64_str
+    return base64.b64encode(buffer).decode("utf-8")

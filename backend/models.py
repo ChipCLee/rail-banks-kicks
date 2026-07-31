@@ -118,4 +118,6 @@ class AnalysisResult(BaseModel):
     direct_shots: List[DirectShot] = Field(default_factory=list)
     bank_shots: List[BankShot] = Field(default_factory=list)
     kick_shots: List[KickShot] = Field(default_factory=list)
-    annotated_image_b64: str         # base64-encoded JPEG
+    cv_diagram_b64: str = ""         # clean 2D CV detection diagram (balls, pockets, diamonds)
+    annotated_image_b64: str         # base64-encoded JPEG with shot overlays
+

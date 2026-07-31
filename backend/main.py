@@ -3,7 +3,7 @@ FastAPI application for Rail-Kick pool table shot analysis.
 
 Provides REST endpoint:
   POST /analyze  - Upload pool table image (with optional manual cue ball override),
-                   returns AnalysisResult JSON (supporting Teach Mode when cue ball is missing)
+                   returns AnalysisResult JSON with clean 2D CV Detection Diagram and shot overlays.
   GET /health    - Healthcheck endpoint
 """
 from __future__ import annotations
@@ -20,11 +20,11 @@ from models import AnalysisResult
 from cv_module import analyse_image
 from geometry import find_direct_shots, find_bank_shots
 from v2_kick_shots import find_kick_shots
-from annotate import annotate_table
+from annotate import annotate_table, render_2d_cv_diagram
 
 app = FastAPI(
     title="Rail-Kick API",
-    description="Pool table shot detection backend API with Teach Mode support",
+    description="Pool table shot detection backend API with 2D CV Diagram & Teach Mode",
     version="0.6.0",
 )
 
@@ -93,6 +93,9 @@ async def analyze_table_image(
     warped = cv_res["warped"]
     cue_detected = cv_res["cue_detected"]
 
+    # 1. Render clean 2D CV Detection Diagram (balls, pockets, diamonds, NO shot lines)
+    cv_diagram_b64 = render_2d_cv_diagram(warped, dims, pockets, balls, diamonds)
+
     cue_ball = next((b for b in balls if b.id == "cue"), None)
 
     if not cue_detected or cue_ball is None:
@@ -117,6 +120,7 @@ async def analyze_table_image(
             direct_shots=[],
             bank_shots=[],
             kick_shots=[],
+            cv_diagram_b64=cv_diagram_b64,
             annotated_image_b64=b64_img,
         )
 
@@ -127,7 +131,7 @@ async def analyze_table_image(
     bank_shots = find_bank_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
     kick_shots = find_kick_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
 
-    # Annotate image
+    # Annotate image with active shot trajectories
     b64_img = annotate_table(
         warped,
         dims,
@@ -149,5 +153,6 @@ async def analyze_table_image(
         direct_shots=direct_shots,
         bank_shots=bank_shots,
         kick_shots=kick_shots,
+        cv_diagram_b64=cv_diagram_b64,
         annotated_image_b64=b64_img,
     )
