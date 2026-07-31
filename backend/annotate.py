@@ -2,7 +2,7 @@
 Image annotation module for Rail-Kick.
 
 Draws visual overlays on top-down warped table image according to SPEC.md §2.4 & §3.5:
-  - 2D CV Detection Diagram: Clean top-down map of detected balls, pockets, and rail diamonds
+  - 2D Overhead Vector Diagram: Synthetic 2D playbook schematic of 9ft Simonis 860 Tournament Blue table
   - Rail diamonds: Small diamond markers + number labels on cushions
   - Cue ball: White circle outline + label "CUE"
   - Object balls: Color-matched outline + label
@@ -33,7 +33,12 @@ COLOR_GREEN_ARROW = (50, 205, 50)     # Rail → Pocket / Object → Pocket
 COLOR_YELLOW_TARGET = (0, 215, 255)   # Target ball highlight
 COLOR_PURPLE_POCKET = (211, 0, 148)   # Target pocket highlight
 COLOR_DIAMOND_BLUE = (255, 191, 0)    # Diamond marker icon
-COLOR_RAIL_DIAMOND = (0, 200, 255)    # Rail diamond marker color
+COLOR_RAIL_DIAMOND = (0, 220, 255)    # Bright yellow/gold for rail diamonds
+
+# 9ft Simonis 860 Tournament Blue table colors
+COLOR_SIMONIS_BLUE = (215, 120, 0)    # BGR for Simonis 860 Tournament Blue felt
+COLOR_RAIL_WOOD = (30, 38, 55)        # Dark mahogany wood cap finish
+COLOR_CUSHION_BORDER = (160, 80, 0)   # Cushion rubber inner edge
 
 
 def _mm_to_px(x_mm: float, y_mm: float, dims: TableDims, img_shape: Tuple[int, int, int]) -> Tuple[int, int]:
@@ -90,17 +95,47 @@ def render_2d_cv_diagram(
     diamonds: List[DiamondMarker],
 ) -> str:
     """
-    Render clean 2D CV Detection Diagram showing ONLY identified balls, pockets, and rail diamonds.
-    Used for verifying computer vision accuracy before/separately from shot trajectory calculations.
+    Render a clean 2D overhead vector schematic of a 9ft Simonis 860 Tournament Blue table.
+    Shows the exact top-down playbook layout with detected balls, pockets, and rail diamonds.
     """
-    img = warped.copy()
+    # Canvas dimensions with 50px rail cushion margins
+    margin = 50
+    pf_w = 1016
+    pf_h = 508
+    canvas_w = pf_w + 2 * margin
+    canvas_h = pf_h + 2 * margin + 30 # +30 for header bar
 
-    # Draw rail diamond markers
+    img = np.full((canvas_h, canvas_w, 3), COLOR_RAIL_WOOD, dtype=np.uint8)
+
+    # 1. Draw Simonis 860 Tournament Blue playfield
+    pf_x1 = margin
+    pf_y1 = margin + 30
+    pf_x2 = margin + pf_w
+    pf_y2 = margin + 30 + pf_h
+
+    cv2.rectangle(img, (pf_x1, pf_y1), (pf_x2, pf_y2), COLOR_SIMONIS_BLUE, -1)
+    cv2.rectangle(img, (pf_x1, pf_y1), (pf_x2, pf_y2), COLOR_CUSHION_BORDER, 3)
+
+    # Convert mm to diagram canvas coordinates
+    def mm_to_canvas(x_mm: float, y_mm: float) -> Tuple[int, int]:
+        c_x = int(pf_x1 + (x_mm / dims.width) * pf_w)
+        c_y = int(pf_y2 - (y_mm / dims.height) * pf_h)
+        return (c_x, c_y)
+
+    # 2. Draw Head String Line & Spots (Head spot, Foot spot)
+    hs_x = int(pf_x1 + (635.0 / dims.width) * pf_w)
+    _draw_dashed_line(img, (hs_x, pf_y1), (hs_x, pf_y2), (255, 255, 255), thickness=1, dash_len=8)
+
+    fs_px = mm_to_canvas(1905.0, 635.0)
+    cv2.circle(img, fs_px, 3, COLOR_WHITE, -1, cv2.LINE_AA)
+
+    # 3. Draw Rail Diamonds
     for d in diamonds:
-        dpx = _mm_to_px(d.x, d.y, dims, img.shape)
-        _draw_diamond_marker(img, dpx, size=6, color=COLOR_RAIL_DIAMOND)
-        offset_y = 14 if d.rail == "TOP" else -10 if d.rail == "BOTTOM" else 4
-        offset_x = 10 if d.rail == "LEFT" else -16 if d.rail == "RIGHT" else -6
+        dpx = mm_to_canvas(d.x, d.y)
+        _draw_diamond_marker(img, dpx, size=5, color=COLOR_RAIL_DIAMOND)
+        
+        offset_y = -10 if d.rail == "TOP" else 16 if d.rail == "BOTTOM" else 4
+        offset_x = -16 if d.rail == "LEFT" else 10 if d.rail == "RIGHT" else -6
         cv2.putText(
             img,
             str(d.number),
@@ -112,17 +147,17 @@ def render_2d_cv_diagram(
             cv2.LINE_AA,
         )
 
-    # Draw pockets
+    # 4. Draw 6 Pockets
     for pkt in pockets:
-        ppx = _mm_to_px(pkt.x, pkt.y, dims, img.shape)
-        cv2.circle(img, ppx, 14, (30, 30, 30), -1, cv2.LINE_AA)
-        cv2.circle(img, ppx, 14, COLOR_WHITE, 1, cv2.LINE_AA)
+        ppx = mm_to_canvas(pkt.x, pkt.y)
+        cv2.circle(img, ppx, 16, (20, 20, 20), -1, cv2.LINE_AA)
+        cv2.circle(img, ppx, 16, COLOR_WHITE, 1, cv2.LINE_AA)
         cv2.putText(img, pkt.id, (ppx[0] - 8, ppx[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
 
-    # Draw balls
+    # 5. Draw Detected Balls
+    r_px = int((28.575 / dims.width) * pf_w)
     for ball in balls:
-        bpx = _mm_to_px(ball.x, ball.y, dims, img.shape)
-        r_px = int((ball.radius_mm / dims.width) * img.shape[1])
+        bpx = mm_to_canvas(ball.x, ball.y)
 
         if ball.label == "cue":
             cv2.circle(img, bpx, r_px, COLOR_WHITE, -1, cv2.LINE_AA)
@@ -136,10 +171,10 @@ def render_2d_cv_diagram(
             cv2.circle(img, bpx, r_px, COLOR_WHITE, 2, cv2.LINE_AA)
             cv2.putText(img, ball.label, (bpx[0] - 18, bpx[1] + r_px + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COLOR_WHITE, 1, cv2.LINE_AA)
 
-    # Top banner header on 2D diagram
-    cv2.rectangle(img, (0, 0), (img.shape[1], 28), (15, 20, 30), -1)
-    header_text = f"2D CV Detection Map | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
-    cv2.putText(img, header_text, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
+    # 6. Top Header Banner
+    cv2.rectangle(img, (0, 0), (canvas_w, 30), (15, 20, 30), -1)
+    header_text = f"Overhead 2D Schematic (9ft Simonis 860 Tournament Blue) | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
+    cv2.putText(img, header_text, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
 
     # Encode JPEG
     _, buffer = cv2.imencode(".jpg", img)
