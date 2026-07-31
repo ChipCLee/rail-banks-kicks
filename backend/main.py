@@ -1,0 +1,109 @@
+"""
+FastAPI application for Rail-Kick pool table shot analysis.
+
+Provides REST endpoint:
+  POST /analyze  - Upload pool table image, returns AnalysisResult JSON
+  GET /health    - Healthcheck endpoint
+"""
+from __future__ import annotations
+
+import io
+from fastapi import FastAPI, File, UploadFile, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import cv2
+import numpy as np
+from PIL import Image
+
+from models import AnalysisResult
+from cv_module import analyse_image
+from geometry import find_direct_shots, find_bank_shots
+from annotate import annotate_table
+
+app = FastAPI(
+    title="Rail-Kick API",
+    description="Pool table shot detection backend API",
+    version="0.6.0",
+)
+
+# Enable CORS for web frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+@app.get("/health")
+def healthcheck():
+    return {"status": "ok", "version": "0.6.0"}
+
+
+@app.post("/analyze", response_model=AnalysisResult)
+async def analyze_table_image(image: UploadFile = File(...)):
+    if image.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported image format '{image.content_type}'. Allowed: JPG, PNG, WEBP.",
+        )
+
+    content = await image.read()
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File size exceeds 20 MB limit.",
+        )
+
+    # Decode image to BGR numpy array
+    try:
+        pil_img = Image.open(io.BytesIO(content)).convert("RGB")
+        img_np = np.array(pil_img)[:, :, ::-1]  # RGB to BGR
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid image file: {str(err)}",
+        )
+
+    # Run CV pipeline
+    cv_res = analyse_image(img_np)
+    if cv_res is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not detect pool table boundary in image.",
+        )
+
+    dims = cv_res["dims"]
+    pockets = cv_res["pockets"]
+    balls = cv_res["balls"]
+    warped = cv_res["warped"]
+
+    # Separate cue ball and object balls
+    cue_ball = next((b for b in balls if b.id == "cue"), None)
+    if cue_ball is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cue ball not detected on table.",
+        )
+
+    object_balls = [b for b in balls if b.id != "cue"]
+
+    # Detect shots
+    direct_shots = find_direct_shots(cue_ball, object_balls, pockets, balls)
+    bank_shots = find_bank_shots(cue_ball, object_balls, pockets, balls, dims.width, dims.height)
+
+    # Annotate image
+    b64_img = annotate_table(warped, dims, pockets, balls, direct_shots, bank_shots, selected_shot_index=0)
+
+    return AnalysisResult(
+        table_dims_mm=dims,
+        pockets=pockets,
+        balls=balls,
+        direct_shots=direct_shots,
+        bank_shots=bank_shots,
+        annotated_image_b64=b64_img,
+    )
