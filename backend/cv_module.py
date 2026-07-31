@@ -73,7 +73,6 @@ def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
         return None
 
     largest = max(contours, key=cv2.contourArea)
-    # Check that table felt takes up a reasonable area of image (at least 15% of image)
     img_area = image_bgr.shape[0] * image_bgr.shape[1]
     if cv2.contourArea(largest) < 0.15 * img_area:
         return None
@@ -211,7 +210,7 @@ def detect_balls_on_warped(
     max_r = int(expected_r_px * 1.6)
     min_dist = int(expected_r_px * 1.6)
 
-    # 1. Hough Circles detection (param2=18 for high sensitivity)
+    # 1. Hough Circles detection
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
@@ -228,7 +227,6 @@ def detect_balls_on_warped(
     if circles is not None:
         circles = np.round(circles[0]).astype(int)
         for (cx_px, cy_px, r_px) in circles:
-            # Exclude pocket corner zones (outer margins)
             margin = int(CORNER_POCKET_RADIUS_MM * px_mm * 0.4)
             if cx_px < margin or cx_px > w_px - margin or cy_px < margin or cy_px > h_px - margin:
                 continue
@@ -238,7 +236,7 @@ def detect_balls_on_warped(
             r_mm = r_px / px_mm
             detected.append((x_mm, y_mm, r_mm))
 
-    # 2. Contour-based circular blob fallback (non-felt region inside playfield)
+    # 2. Contour-based circular blob fallback
     hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     mask_felt = (
         cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |
@@ -246,7 +244,6 @@ def detect_balls_on_warped(
     )
     non_felt = ~mask_felt
 
-    # Ignore pocket margins
     margin_px = int(CORNER_POCKET_RADIUS_MM * px_mm * 0.6)
     non_felt[:margin_px, :] = 0
     non_felt[-margin_px:, :] = 0
@@ -262,7 +259,6 @@ def detect_balls_on_warped(
         expected_area = math.pi * (expected_r_px ** 2)
         if 0.3 * expected_area <= area <= 2.2 * expected_area:
             (cx_px, cy_px), r_px = cv2.minEnclosingCircle(c)
-            # Check circularity
             peri = cv2.arcLength(c, True)
             if peri > 0:
                 circularity = 4 * math.pi * area / (peri * peri)
@@ -271,7 +267,6 @@ def detect_balls_on_warped(
                     y_mm = (h_px - cy_px) / px_mm
                     r_mm = r_px / px_mm
 
-                    # Add if not overlapping an existing Hough circle
                     overlap = any(math.hypot(x_mm - ex, y_mm - ey) < BALL_DIAMETER_MM * 0.8 for (ex, ey, _) in detected)
                     if not overlap:
                         detected.append((x_mm, y_mm, r_mm))
@@ -294,12 +289,21 @@ _HUE_BUCKETS = [
 ]
 
 
-def _dominant_hue_name(hsv_roi: np.ndarray) -> str:
-    if hsv_roi.size == 0:
-        return "unknown"
-    hue_channel = hsv_roi[:, :, 0].ravel()
+def _dominant_hue_name(hsv_pixels: np.ndarray) -> str:
+    """Return dominant hue bucket name from 3D HSV ROI or 2D filtered pixel list."""
+    if hsv_pixels.size == 0:
+        return "red"
+
+    if hsv_pixels.ndim == 3:
+        hue_channel = hsv_pixels[:, :, 0].ravel()
+    elif hsv_pixels.ndim == 2:
+        hue_channel = hsv_pixels[:, 0].ravel()
+    else:
+        hue_channel = hsv_pixels.ravel()
+
     if len(hue_channel) == 0:
-        return "unknown"
+        return "red"
+
     hist = np.bincount(hue_channel.astype(int), minlength=181)
     dominant_hue = int(np.argmax(hist))
     for lo, hi, name in _HUE_BUCKETS:
