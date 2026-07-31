@@ -5,8 +5,10 @@
 **Rail-Kick** is a browser-based web application that analyzes a pool/billiards table photograph to:
 
 1. Detect and locate all balls on the table.
-2. Identify any **one-rail bank shot** (also called a **one-rail kick shot**) from the cue ball (white ball) to any object ball that can be pocketed.
-3. Present the result as an annotated image highlighting the **target ball** and the **target pocket** for each valid shot found.
+2. Identify any **one-bank shot** where the cue ball hits an object ball directly and the object ball bounces off one rail into a pocket.
+3. Present the result as an annotated image highlighting the **target ball**, the **rail contact point**, and the **target pocket** for each valid shot found.
+
+> **v1 scope**: One-bank shots only. Kick shots (cue ball off rail first) and multi-rail combinations are deferred to v2.
 
 ---
 
@@ -16,9 +18,12 @@
 - [System Architecture](#system-architecture)
 - [Web Application](#web-application)
 - [Feature 1 – Ball Position Analysis](#feature-1--ball-position-analysis)
-- [Feature 2 – Rail Bank Shot Detection](#feature-2--rail-bank-shot-detection)
+- [Feature 2 – One-Bank Shot Detection](#feature-2--one-bank-shot-detection)
 - [Data Models](#data-models)
 - [Constraints & Assumptions](#constraints--assumptions)
+- [v2 Scope (Planned)](#v2-scope-planned)
+  - [Feature 3 – One-Rail Kick Shot Detection](#feature-3--one-rail-kick-shot-detection)
+  - [Feature 4 – Cushion Throw Modelling](#feature-4--cushion-throw-modelling)
 - [Open Questions](#open-questions)
 
 ---
@@ -57,13 +62,13 @@
            ▼                                           ▼
 ┌──────────────────────────┐             ┌─────────────────────────┐
 │  Computer Vision Module  │             │  Geometry/Physics Module │
-│  • Table boundary detect │             │  • Rail reflection calc  │
-│  • Ball detection        │             │  • Obstruction check     │
-│  • Ball classification   │             │  • Pocket intersection   │
-│    (color/type only,     │             │    test                  │
-│     no number OCR)       │             └─────────────────────────┘
-│  • Coordinate mapping    │
-└──────────────────────────┘
+│  • Table boundary detect │             │  • Ghost-ball direct-hit │
+│  • Ball detection        │             │    path check            │
+│  • Ball classification   │             │  • Object ball → rail    │
+│    (color/type only,     │             │    reflection calc       │
+│     no number OCR)       │             │  • Pocket intersection   │
+│  • Coordinate mapping    │             │    test (one-bank only)  │
+└──────────────────────────┘             └─────────────────────────┘
 ```
 
 ---
@@ -85,15 +90,15 @@
 
 ```
 1. User opens the web app in a browser.
-2. User uploads a photo of the pool table
+2. User uploads a photo of the pool table by holding phone overhead
    (drag-and-drop area or "Choose File" button).
 3. App sends the photo to POST /analyze.
-4. Backend processes and returns AnalysisResult JSON.
-5. App renders the annotated image with shot overlays.
-6. App shows a results panel listing each valid shot:
-   "Ball [color/type] → Pocket [id]  via [rail] rail"
-7. User can tap/click a shot in the list to highlight
-   that specific shot path on the image.
+4. Backend (Python + FastAPI + OpenCV) processes and returns AnalysisResult JSON.
+5. App renders the annotated image full-width at the top.
+6. App shows a scrollable shot list below, in two groups:
+   - "Direct Shots" → "[color/type] ball directly into [pocket]" (ranked easiest first)
+   - "Bank Shots"   → "[color/type] ball via [rail] rail into [pocket]" (ranked easiest first)
+7. User taps a shot in the list to highlight its specific path on the image.
 ```
 
 ### UI Screens
@@ -102,8 +107,8 @@
 |---|---|
 | **Upload Screen** | Full-page drop zone with instructions. Accepts JPG/PNG/WEBP ≤ 20 MB. |
 | **Processing Screen** | Spinner / progress indicator while backend analyzes. |
-| **Result Screen** | Left: annotated image. Right: scrollable shot list. |
-| **Error Screen** | Friendly message if no table is detected or no valid shots exist. |
+| **Result Screen** | **Mobile-first layout**: annotated image full-width at top; shot list scrolls below. Two labelled groups: "Direct Shots" (ranked by ease) then "Bank Shots" (ranked by ease). Tapping a shot highlights its path on the image. |
+| **Error Screen** | Friendly message: `"No valid shots found — every possible bank is blocked or misses all pockets."` Also shown if no table or cue ball is detected in the photo. |
 
 ---
 
@@ -115,9 +120,9 @@ The user uploads a single photo through the web UI.
 
 | Field | Type | Description |
 |---|---|---|
-| `image` | `multipart/form-data file` | A JPG, PNG, or WEBP photograph of the pool table. Taken from roughly overhead (top-down or slight angle). Maximum file size: 20 MB. |
+| `image` | `multipart/form-data file` | A JPG, PNG, or WEBP photograph of the pool table. Taken by **holding a phone overhead** (moderate angle, common case). Maximum file size: 20 MB. |
 
-> **No camera metadata is required.** The perspective correction is computed automatically from the detected table boundary.
+> **No camera metadata is required.** The perspective correction is computed automatically from the detected table boundary using **full automatic CV detection** (green felt masking + corner finding). There is no manual calibration step in v1.
 
 ### 1.2 Processing Steps
 
@@ -180,130 +185,160 @@ Each ball's pixel centre is transformed via the homography matrix into **table c
 
 ---
 
-## Feature 2 – Rail Bank Shot Detection
+## Feature 2 – One-Bank Shot Detection
 
-### 2.1 Concept
+> **v1 scope**: This feature detects **two shot types** for every object ball on the table:
+> 1. **Direct shots** — cue ball hits object ball, object ball goes straight to a pocket (no rail).
+> 2. **One-bank shots** — cue ball hits object ball directly, object ball bounces off exactly one rail into a pocket.
+>
+> All 6 pockets (4 corners + 2 sides) are valid targets. Kick shots (cue ball off rail first) are deferred to v2.
+> A path is **blocked** if any other ball's body comes within one ball-diameter (57.15 mm) of the line segment (ghost-ball clearance check).
 
-For a **one-rail kick shot**, the geometry is modelled using the **mirror / reflection method**:
+### 2.1 Concept & Worked Example
 
-1. Reflect the object ball's position across the chosen rail.
-2. Draw a straight line from the cue ball to the reflected position.
-3. The intersection of that line with the rail gives the **contact point**.
-4. If the contact point lies within the rail's valid range AND the direct line from contact point to object ball is unobstructed, the shot is valid.
-
-For a **one-rail bank shot**, the same reflection method is applied but:
-
-1. The object ball is the origin of the reflected trajectory.
-2. Its path after being struck is reflected across the rail.
-3. Check that the reflected path enters a pocket.
-
-### 2.2 Processing Steps
-
-#### Step 1 – Enumerate Rail Candidates
-
-For each rail (`TOP`, `BOTTOM`, `LEFT`, `RIGHT`), generate a candidate shot for each `(cue_ball, object_ball)` pair.
-
-#### Step 2 – Reflection Calculation
-
-Given:
-- Cue ball centre: `C = (cx, cy)`
-- Object ball centre: `O = (ox, oy)`
-- Rail being tested (example: TOP rail at `y = table_height`)
-
-**Mirror the target across the rail:**
+**Scenario**: The 8-ball sits near the center of the table. The cue ball is on the left side. There is no clear straight path to any pocket, but the 8-ball can be banked off the right rail into the left side pocket (ML).
 
 ```
-# Reflect O across the TOP rail (y = table_height)
-O_mirror = (ox, 2 * table_height - oy)
-
-# Parameterize the line from C to O_mirror
-# Solve for the point P where the line crosses y = table_height
-t = (table_height - cy) / (O_mirror.y - cy)
-P = (cx + t * (O_mirror.x - cx), table_height)
+  ML●                              ●MR
+  ┌────────────────────────────────┐
+  │                                │
+  │  C●                    ●8     │   ← object ball near right rail
+  │    ╲                  ╱       │
+  │     ╲ cue→object     ╱        │
+  │      ●────────────►●          │
+  │                     ╲         │
+  │             bank path ╲       │
+  │                        ►──●──►│  ← bounces off RIGHT rail
+  │                        contact│
+  │        ◄───────────────┘      │
+  │  target pocket: ML ●          │
+  └────────────────────────────────┘
 ```
 
-The same logic is applied for all four rails.
+The object ball hits the **right rail** and travels to the **left side pocket (ML)** — the pocket on the **other side** of the table from the rail it hit.
 
-#### Step 3 – Contact Point Validity
+### 2.2 Algorithm
 
-The contact point `P` must lie **within the cushion's active range** (excluding pocket openings):
+For each `(cue_ball, object_ball)` pair, test all four rails as candidates.
+
+#### Step 1 – Direct Hit Check (Cue Ball → Object Ball)
+
+Verify the cue ball can reach the object ball in a **straight line without obstruction**.
+
+- Compute the line segment from `C` (cue ball centre) to `O` (object ball centre).
+- For every other ball `B`, check: `perp_distance(B.centre, segment C→O) < ball_diameter` (57.15 mm).
+- If any ball blocks the path → this object ball is **not reachable**; skip all rails for it.
+
+#### Step 2 – Ghost-Ball Contact Point
+
+The cue ball does not hit the exact centre of the object ball. Find the **ghost-ball position** `G` — the point where the cue ball's centre would be when it just touches the object ball:
+
+```
+# Direction from C toward O
+d = normalize(O - C)
+# Ghost ball centre is one ball-diameter back along that direction from O
+G = O - d * ball_diameter   # = O - d * 57.15mm
+```
+
+The object ball departs from `O` along the direction `d` after being struck.
+
+#### Step 3 – Rail Reflection (Object Ball Path)
+
+For each candidate rail, reflect the object ball's **departure direction** off that rail:
+
+```
+# Example: object ball travels in direction d = (dx, dy)
+# Reflecting off LEFT rail (x = 0): flip the x component
+d_reflected = (-dx, dy)
+
+# Find the intersection point P of the object ball's path with the rail
+# From O in direction d, find where it hits x = 0 (LEFT rail)
+t = (0 - ox) / dx          # solve O.x + t*dx = 0
+P = (0, oy + t * dy)       # contact point on LEFT rail
+```
+
+Apply symmetrically for all four rails.
+
+#### Step 4 – Rail Contact Point Validity
+
+The contact point `P` must fall within the **active cushion range** (not inside a pocket opening):
 
 | Rail | Valid range |
 |---|---|
-| TOP / BOTTOM | `x ∈ [pocket_radius, table_width - pocket_radius]`, excluding the side pocket zone at `x ≈ table_width/2` |
-| LEFT / RIGHT | `y ∈ [pocket_radius, table_height - pocket_radius]`, excluding the side pocket zone at `y ≈ table_height/2` |
+| LEFT / RIGHT | `y ∈ [corner_pocket_radius, table_height - corner_pocket_radius]`, excluding the side pocket zone `y ∈ [table_height/2 - side_pocket_radius, table_height/2 + side_pocket_radius]` |
+| TOP / BOTTOM | `x ∈ [corner_pocket_radius, table_width - corner_pocket_radius]`, excluding the side pocket zone `x ∈ [table_width/2 - side_pocket_radius, table_width/2 + side_pocket_radius]` |
 
-#### Step 4 – Collision / Obstruction Check
+Typical values: `corner_pocket_radius ≈ 57 mm`, `side_pocket_radius ≈ 63 mm`.
 
-Two line segments must be clear of all other balls:
+#### Step 5 – Pocket Intersection Check
 
-1. **Cue ball → Rail contact point `P`**: No other ball's body intersects this path.
-2. **Rail contact point `P` → Object ball**: No other ball's body intersects this path.
+From `P`, the object ball travels in the reflected direction `d_reflected`. Check whether this path passes within `pocket_radius` of any of the 6 pocket centres.
 
-**Obstruction test**: For each other ball `B`, compute the perpendicular distance from `B.centre` to the line segment. The path is blocked if that distance is less than `ball_diameter` (57.15 mm).
+- If yes → **valid bank shot found**; record the pocket as the `pocket_id`.
+- If no → discard this rail candidate.
 
-#### Step 5 – Pocketability Check (One-Rail Bank Only)
+#### Step 6 – Post-Rail Obstruction Check
 
-After the cue ball strikes the object ball at the computed ghost-ball contact, the object ball travels in a straight line reflected across the rail. Check whether that path intersects any pocket centre within `pocket_radius`. If yes, the shot pockets a ball.
+Verify the reflected path from `P` to the target pocket is not blocked by any other ball (same perpendicular-distance test as Step 1).
 
-### 2.3 Shot Metadata Output
+### 2.3 Shot Output
 
-Each valid shot is emitted as a `Shot` record. The two key user-facing fields are **`object_ball_id`** (which ball to aim for) and **`pocket_id`** (which pocket it enters). Both are always present for a bank shot; for a kick shot `pocket_id` is `null` because the pocket entry depends on a subsequent shot.
+Each valid shot is emitted as a `Shot` record. Every one-bank shot always has both an `object_ball_id` (which ball to strike) and a `pocket_id` (where it will fall).
 
-**Example – One-Rail Kick Shot:**
+**Example – 8-ball banks off RIGHT rail into ML pocket:**
 ```json
 {
-  "shot_type": "one_rail_kick",
-  "cue_ball": { "x": 635, "y": 635 },
-  "object_ball_id": "obj1",
-  "object_ball_label": "solid-red",
-  "rail": "TOP",
-  "contact_point": { "x": 980, "y": 1270 },
-  "path": [
-    { "x": 635,  "y": 635  },
-    { "x": 980,  "y": 1270 },
-    { "x": 1270, "y": 900  }
-  ],
-  "estimated_angle_deg": 42.5,
-  "obstructed": false,
-  "pocket_id": null
-}
-```
-
-**Example – One-Rail Bank Shot:**
-```json
-{
-  "shot_type": "one_rail_bank",
-  "cue_ball": { "x": 635, "y": 635 },
-  "object_ball_id": "obj2",
-  "object_ball_label": "stripe-blue",
+  "shot_type": "one_bank",
+  "cue_ball": { "x": 400, "y": 635 },
+  "object_ball_id": "obj_eight",
+  "object_ball_label": "eight",
   "rail": "RIGHT",
   "contact_point": { "x": 2540, "y": 480 },
   "path": [
-    { "x": 900,  "y": 700  },
-    { "x": 2540, "y": 480  },
-    { "x": 1270, "y": 0    }
+    { "x": 400,  "y": 635 },
+    { "x": 1800, "y": 635 },
+    { "x": 2540, "y": 480 },
+    { "x": 0,   "y": 635 }
   ],
-  "estimated_angle_deg": 35.0,
-  "obstructed": false,
-  "pocket_id": "BR"
+  "bank_angle_deg": 38.0,
+  "pocket_id": "ML"
 }
 ```
 
+> `path` waypoints: `[cue_ball_centre, object_ball_centre, rail_contact_point, pocket_centre]`
+
+#### Shot Ranking (Q5)
+
+The `shots` array in `AnalysisResult` is **sorted by ease of shot**, easiest first.
+
+**Ease metric** = how close the bank angle is to **90°** (a ball hitting the rail perfectly square is the easiest to judge and execute accurately). Shallower angles are harder because small aiming errors cause large positional errors after the rebound.
+
+```
+ease_score = |bank_angle_deg - 90|   // lower = easier
+```
+
+| `bank_angle_deg` | `ease_score` | Difficulty |
+|---|---|---|
+| 90° | 0 | Easiest — ball hits rail square |
+| 60° or 120° | 30 | Moderate |
+| 30° or 150° | 60 | Hard — very shallow or steep |
+
+The result panel displays shots in this order, with the #1 shot (lowest `ease_score`) highlighted by default.
+
 ### 2.4 Annotated Image Output
 
-The backend returns the original photo (perspective-corrected to top-down) with SVG/canvas overlays drawn on it. The frontend renders this image and allows the user to tap a shot in the results panel to toggle highlight of a specific shot path.
+The backend returns the perspective-corrected top-down image with overlays. The frontend renders this and allows the user to tap a shot in the results panel to highlight its specific path.
 
 | Element | Visual Style | Meaning |
 |---|---|---|
 | Cue ball | ⚪ White circle outline + label "CUE" | Identified cue ball |
-| Object balls | Colour-matched circle outline + `label` text (e.g. "solid-red") | Each object ball — no number shown |
-| **Target ball** (selected shot) | 🟡 Bright yellow filled circle | The object ball for the active shot |
-| Cue → contact point | 🔵 Blue dashed arrow | First segment of the cue ball's path |
-| Contact → object ball (kick) | 🟢 Green dashed arrow | Second segment of kick path |
-| Object ball → pocket (bank) | 🟢 Green dashed arrow | Object ball's banking path to pocket |
-| Rail contact point | ⬜ White filled dot | Where the ball touches the cushion |
-| **Target pocket** (selected shot) | 🟣 Purple pulsing ring | Destination pocket for the active shot |
+| Object balls | Colour-matched circle outline + `label` text | Each object ball — no number shown |
+| **Target ball** (active shot) | 🟡 Bright yellow filled circle | Object ball to be struck |
+| Cue → object ball | 🔵 Blue solid arrow | Direct hit path (cue ball to object ball) |
+| Object ball → rail contact | 🟠 Orange dashed arrow | Object ball travelling to the rail |
+| Rail contact → pocket | 🟢 Green dashed arrow | Object ball path after banking off rail |
+| Rail contact point | ⬜ White filled dot | Where the object ball hits the cushion |
+| **Target pocket** (active shot) | 🟣 Purple pulsing ring | Pocket the banked ball enters |
 
 ---
 
@@ -330,24 +365,38 @@ interface Pocket {
 
 type RailId = "TOP" | "BOTTOM" | "LEFT" | "RIGHT";
 
-interface Shot {
-  shot_type: "one_rail_kick" | "one_rail_bank";
+// v1 supports two shot types. Kick shots ('one_rail_kick') are v2.
+interface DirectShot {
+  shot_type: "direct";
   cue_ball: { x: number; y: number };
   object_ball_id: string;       // key into balls[]
-  object_ball_label: string;    // human-readable label, e.g. "solid-red"
-  rail: RailId;
-  contact_point: { x: number; y: number };
-  path: Array<{ x: number; y: number }>;  // ordered waypoints
-  estimated_angle_deg: number;            // angle at rail contact
-  obstructed: boolean;
-  pocket_id: string | null;     // pocket id for bank shots; null for kick shots
+  object_ball_label: string;    // e.g. "eight", "solid-red"
+  path: Array<{ x: number; y: number }>;    // [cue, object, pocket]
+  ease_score: number;           // |0 - 0| = 0 for direct (always easiest)
+  pocket_id: string;
 }
+
+interface BankShot {
+  shot_type: "one_bank";
+  cue_ball: { x: number; y: number };
+  object_ball_id: string;
+  object_ball_label: string;
+  rail: RailId;                 // which rail the object ball banks off
+  contact_point: { x: number; y: number };  // where object ball hits the rail
+  path: Array<{ x: number; y: number }>;    // [cue, object, rail_contact, pocket]
+  bank_angle_deg: number;       // object ball's angle of incidence at the rail
+  ease_score: number;           // |bank_angle_deg - 90| — lower is easier
+  pocket_id: string;
+}
+
+type Shot = DirectShot | BankShot;
 
 interface AnalysisResult {
   table_dims_mm: { width: number; height: number };
   pockets: Pocket[];
   balls: Ball[];
-  shots: Shot[];                // all valid one-rail shots found
+  direct_shots: DirectShot[];   // sorted by ease_score ascending
+  bank_shots: BankShot[];       // sorted by ease_score ascending
 }
 ```
 
@@ -361,13 +410,195 @@ interface AnalysisResult {
 | C2 | The photograph must capture the **entire** table surface. Partial views are not supported. |
 | C3 | Accepted image formats: **JPG, PNG, WEBP**. Maximum file size: **20 MB**. |
 | C4 | Lighting must be reasonably uniform. Extreme shadows that mask balls are not handled. |
-| C5 | Only **one-rail** kick and bank shots are detected. Multi-rail combinations are out of scope for v1. |
-| C6 | Ball cushion compression, throw, squirt, and spin are **not modelled** in v1; pure geometric reflection is used. |
-| C7 | **Ball number recognition is out of scope.** Balls are identified by color/type only. |
-| C8 | The cue ball must be visually distinguishable (white or near-white). |
-| C9 | A minimum of 2 balls (cue ball + at least one object ball) must be present on the table. |
-| C10 | Balls must not be completely overlapping in the image. |
-| C11 | The application runs in a **web browser**. No native app installation is required. |
+| C5 | v1 detects **two shot types**: (a) direct shots — cue ball hits object ball straight to a pocket; (b) one-bank shots — object ball hits exactly one rail before pocketing. The cue ball must reach the object ball directly in both cases. |
+| C6 | Multi-rail banks (2+ rails) are out of scope for v1. |
+| C7 | **Kick shots** (cue ball off a rail before hitting the object ball) are out of scope for v1. |
+| C8 | Ball cushion compression, throw, squirt, and spin are **not modelled** in v1; pure geometric reflection is used. |
+| C9 | **Ball number recognition is out of scope.** Balls are identified by color/type only. |
+| C10 | The cue ball must be visually distinguishable (white or near-white). |
+| C11 | A minimum of 2 balls (cue ball + at least one object ball) must be present on the table. |
+| C12 | Balls must not be completely overlapping in the image. |
+| C13 | The application runs in a **web browser**. No native app installation is required. |
+
+---
+
+## v2 Scope (Planned)
+
+> Features below are **not part of v1**. They are documented here to guide future architecture decisions and to ensure the v1 data model remains extensible.
+
+---
+
+### Feature 3 – One-Rail Kick Shot Detection
+
+A **kick shot** is the mirror image of a bank shot: the **cue ball** bounces off a rail first, then travels to strike the object ball. The object ball then pockets by any means (direct or bank).
+
+#### 3.1 Concept & Worked Example
+
+**Scenario**: The 8-ball is blocked from a direct hit. The player aims the cue ball at the **front rail at the 2.5-diamond mark**, the cue ball bounces back and strikes the 8-ball, which then rolls into the **lower-left corner pocket (BL)**.
+
+```
+BL●                              ●BR   ← bottom (foot) rail
+  ┌────────────────────────────────┐
+  │    ◄────────────────●◄────── │  ← 2.5-diamond contact on front rail
+  │  ►                  ╲         │
+  │  ● C (cue ball)       ○ 8-ball │
+  │  kick path ►          ╲        │
+  │                        ►       │
+  │              8-ball → BL pocket│
+  ┌────────────────────────────────┐
+  ●────────────────────────────────●   ← front (head) rail
+TL                              TR
+```
+
+#### 3.2 Diamond Coordinate System
+
+Pool tables have evenly spaced **diamond markers** on the rail cushions used as aiming references.
+
+| Table size | Diamonds per long rail | Diamonds per short rail |
+|---|---|---|
+| 9-foot | 7 | 3 |
+| 8-foot | 7 | 3 |
+| 7-foot | 7 | 3 |
+
+Diamonds are numbered from **0 (corner pocket) to 4 (side pocket)** along each half-rail.
+
+```
+Corner          Side          Corner
+  ●───◆───◆───◆───◆●◆────◆───◆───◆───◆───●
+  0   1   2   3   4  4   3   2   1   0
+```
+
+The **2.5-diamond mark** is the midpoint between diamonds 2 and 3 on the short (head/foot) rail:
+
+```
+rail_contact_x = corner_x + 2.5 * (rail_length / 4)
+```
+
+The system expresses every rail contact point in diamond units for display (e.g. `"2.5 diamonds from TL corner on TOP rail"`).
+
+#### 3.3 Algorithm
+
+##### Step 1 – Enumerate Rail Contact Candidates
+
+For each `(cue_ball, object_ball)` pair and each of the four rails, compute the cue ball contact point using the **mirror / reflection method** (same as v1 bank, but mirrored on the cue ball side):
+
+```
+# Mirror the OBJECT BALL across the chosen rail
+O_mirror = reflect(O, rail)
+
+# Draw a straight line from CUE BALL to the mirrored position
+# The intersection with the rail is the kick contact point P
+t = (rail_coord - cue.y) / (O_mirror.y - cue.y)   # example: top rail
+P = (cue.x + t * (O_mirror.x - cue.x), rail_coord)
+```
+
+##### Step 2 – Diamond Label
+
+Convert the contact point `P` from mm to diamond units for display:
+
+```
+diamond_position = (P.x - corner_x) / diamond_spacing_mm
+```
+
+##### Step 3 – Obstruction Checks
+
+1. **Cue ball → `P`**: path must be clear (same perpendicular-distance test as v1).
+2. **`P` → Object ball**: path after rail bounce must be clear.
+
+##### Step 4 – Object Ball Pocketability
+
+After the cue ball strikes the object ball, check if the object ball can be pocketed (direct or one-bank). In v2 this is limited to **direct pocket** (object ball → pocket in a straight line) to keep scope manageable.
+
+#### 3.4 Shot Output (v2 extension)
+
+Kick shots extend the `Shot` interface with `shot_type: "one_rail_kick"` and an additional `diamond_label` field:
+
+```json
+{
+  "shot_type": "one_rail_kick",
+  "cue_ball": { "x": 400, "y": 900 },
+  "object_ball_id": "obj_eight",
+  "object_ball_label": "eight",
+  "rail": "TOP",
+  "contact_point": { "x": 1270, "y": 1270 },
+  "diamond_label": "2.5 diamonds from TL on TOP rail",
+  "path": [
+    { "x": 400,  "y": 900  },
+    { "x": 1270, "y": 1270 },
+    { "x": 1800, "y": 635  },
+    { "x": 0,   "y": 0    }
+  ],
+  "bank_angle_deg": 45.0,
+  "pocket_id": "BL"
+}
+```
+
+> `path` waypoints: `[cue_ball, rail_contact_point, object_ball, pocket]`
+
+#### 3.5 Annotated Image (additions for kick shots)
+
+| Element | Visual Style | Meaning |
+|---|---|---|
+| Cue → rail contact | 🔵 Blue solid arrow | Cue ball travelling to the rail |
+| Rail contact → object ball | 🟠 Orange solid arrow | Cue ball after bouncing off rail |
+| Object ball → pocket | 🟢 Green dashed arrow | Object ball's path to pocket |
+| Diamond marker | 🔷 Blue diamond icon on rail | Rail contact point expressed in diamonds |
+
+---
+
+### Feature 4 – Cushion Throw Modelling
+
+#### 4.1 What is Cushion Throw?
+
+In real play, when a ball strikes a cushion at a shallow angle, **friction between the ball and the rubber** causes the rebound angle to be slightly larger than the geometric angle (the ball is "grabbed" by the cushion and steered back toward the rail it came from). This effect is called **cushion throw** or **rail throw**.
+
+```
+  Geometric reflection:       Actual rebound (throw applied):
+
+  ───────►╲                  ────────────►╲
+            ╲ θ_in              θ_in         ╲ θ_out < θ_in
+             ╲────►                            ╲────►
+```
+
+#### 4.2 Throw Correction Model (v2)
+
+v2 applies a simplified empirical **throw correction** based on angle of incidence:
+
+```
+# Throw is most significant at shallow angles, negligible near 90°
+throw_correction_deg = k * cos(2 * bank_angle_deg)
+
+# Adjusted rebound angle
+rebound_angle_deg = bank_angle_deg - throw_correction_deg
+```
+
+Where `k` is an empirically tuned constant (typical value: **3–6 degrees** maximum throw). This is applied to both bank shots (v1 upgraded) and kick shots (v2).
+
+| Angle of incidence | Throw correction (approx.) |
+|---|---|
+| 90° (square) | 0° (no throw) |
+| 60° | ~1.5° |
+| 45° | ~3° |
+| 30° | ~4.5° |
+| 15° (very shallow) | ~5.5° |
+
+#### 4.3 Impact on v1 One-Bank Shots
+
+In v2, the throw correction is also **retroactively applied to one-bank shots** from v1. The pocket intersection check and shot validity are re-evaluated using the corrected rebound angle. This may change which shots are listed as valid for near-miss angles.
+
+#### 4.4 Shot Output (v2 extension)
+
+The `Shot` record gains a `throw_correction_deg` field:
+
+```json
+{
+  "shot_type": "one_bank",
+  "bank_angle_deg": 38.0,
+  "throw_correction_deg": 4.1,
+  "adjusted_rebound_angle_deg": 33.9,
+  "pocket_id": "ML"
+}
+```
 
 ---
 
@@ -375,12 +606,13 @@ interface AnalysisResult {
 
 | # | Status | Question | Impact |
 |---|---|---|---|
-| Q1 | 🔴 Open | Should **cushion throw** or ghost-ball aiming offset be modelled in v2? | Affects geometric accuracy for cut shots off the rail. |
+| Q1 | ✅ Resolved | Should **cushion throw** be modelled? **Yes** — planned for v2. v1 uses pure geometric reflection; v2 will apply a throw offset. | — |
 | Q2 | ✅ Resolved | Input is a **photo uploaded via the web UI** (drag-and-drop or file picker). Live video is out of scope for v1. | — |
-| Q3 | 🔴 Open | Should the system support **snooker** tables in a future version? | Requires a separate ball classifier and pocket geometry. |
+| Q3 | ✅ Resolved | Snooker table support: **No**, not planned. Pool tables only (7 / 8 / 9 ft). | — |
 | Q4 | ✅ Resolved | **Number recognition is not required.** Color/type label is sufficient. | — |
-| Q5 | 🔴 Open | Should the output **rank shots** (easiest angle first) or list all equally? | Affects UX design of the results panel. |
-| Q6 | ✅ Resolved | Target platform is **web browser** (React SPA + Python backend). | Stack selected: Vite + FastAPI + OpenCV. |
+| Q5 | ✅ Resolved | **Yes — shots are ranked by ease**, easiest first. See ranking definition in §2.3. | — |
+| Q6 | ✅ Resolved | Target platform is **web browser** (React SPA + Python backend). Stack selected: Vite + FastAPI + OpenCV. | — |
+| Q7 | ✅ Resolved | **v1 shot scope**: One-bank shots only (object ball off one rail into pocket). Kick shots deferred to v2. | — |
 
 ---
 
@@ -390,3 +622,7 @@ interface AnalysisResult {
 |---|---|---|---|
 | 0.1 | 2026-07-31 | — | Initial draft |
 | 0.2 | 2026-07-31 | — | Added: photo upload input, target ball + pocket output, no number OCR, web app platform (React + FastAPI). Closed Q2, Q4, Q6. |
+| 0.3 | 2026-07-31 | — | Narrowed v1 to one-bank shots only. Removed kick shot geometry from v1. Rewrote Feature 2 with ghost-ball contact, object-ball reflection, and pocket intersection. Closed Q7. |
+| 0.4 | 2026-07-31 | — | Resolved Q1 (throw in v2), Q3 (no snooker), Q5 (rank shots by ease). Added shot ranking definition to §2.3. All questions resolved. |
+| 0.5 | 2026-07-31 | — | Added v2 scope: Feature 3 (one-rail kick shots + diamond system, 2.5-diamond worked example), Feature 4 (cushion throw modelling with empirical correction). TOC updated. |
+| 0.6 | 2026-07-31 | — | /grill-me interview: added direct shots to v1 scope, mobile-first result layout, auto table detection confirmed, two-group results panel, DirectShot + BankShot data models, all 6 pockets valid, ghost-ball obstruction confirmed. |
