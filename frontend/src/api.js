@@ -1,4 +1,21 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    const protocol = window.location.protocol;
+    const port = window.location.port;
+
+    // If running Vite dev server (port 3000) or accessing via IP from mobile phone
+    if (port === '3000') {
+      return `${protocol}//${hostname}:8000`;
+    }
+    // Production Nginx proxy or relative path
+    return '';
+  }
+  return 'http://localhost:8000';
+};
 
 export async function analyzeTableImage(file, options = {}) {
   const formData = new FormData();
@@ -12,14 +29,34 @@ export async function analyzeTableImage(file, options = {}) {
     formData.append('manual_cue_ball_id', options.manual_cue_ball_id);
   }
 
-  const response = await fetch(`${API_BASE_URL}/analyze`, {
-    method: 'POST',
-    body: formData,
-  });
+  const baseUrl = getApiBaseUrl();
+  const endpoint = baseUrl ? `${baseUrl}/analyze` : '/analyze';
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (err) {
+    // If direct port 8000 fails, attempt relative path fallback
+    if (baseUrl) {
+      try {
+        response = await fetch('/analyze', {
+          method: 'POST',
+          body: formData,
+        });
+      } catch (fallbackErr) {
+        throw new Error(`Failed to connect to backend API server (${endpoint}). Please ensure backend is running.`);
+      }
+    } else {
+      throw new Error(`Failed to connect to backend API server (${endpoint}). Please ensure backend is running.`);
+    }
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Server error: ${response.statusText}`);
+    throw new Error(errorData.detail || `Server error (${response.status}): ${response.statusText}`);
   }
 
   return await response.json();
