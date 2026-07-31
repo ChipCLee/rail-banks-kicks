@@ -3,7 +3,7 @@ Computer Vision module for Rail-Kick.
 
 Implements:
   1. Table boundary detection (multi-color felt masking: Green, Simonis Tournament Blue, Red/Burgundy → homography)
-  2. Ball detection (HoughCircles + non-felt circular blob contours)
+  2. Ball detection (Playfield non-felt blob contours + HoughCircles)
   3. Ball classification (HSV color profiling with support for red-dot / measles cue balls)
   4. Diamond marker generation (for rails)
   5. Perspective-corrected top-down image output + Teach Mode fallback
@@ -200,47 +200,17 @@ def detect_balls_on_warped(
     dims: TableDims,
 ) -> List[Tuple[float, float, float]]:
     """
-    Detect balls on top-down warped playfield using HoughCircles
-    with adaptive parameter thresholds and contour blob backup.
+    Detect balls on top-down warped playfield using non-felt contour blob search
+    strictly constrained within the inner cushion playfield.
     """
     px_mm = _px_per_mm_from_warped(warped, dims)
     expected_r_px = BALL_RADIUS_MM * px_mm
+    expected_area = math.pi * (expected_r_px ** 2)
     h_px, w_px = warped.shape[0], warped.shape[1]
 
-    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+    # Inner playfield cushion margin (100mm inside the outer table boundary)
+    margin_px = int(100.0 * px_mm)
 
-    min_r = int(expected_r_px * 0.5)
-    max_r = int(expected_r_px * 1.6)
-    min_dist = int(expected_r_px * 1.6)
-
-    # 1. Hough Circles detection
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=min_dist,
-        param1=50,
-        param2=18,
-        minRadius=min_r,
-        maxRadius=max_r,
-    )
-
-    detected: List[Tuple[float, float, float]] = []
-
-    if circles is not None:
-        circles = np.round(circles[0]).astype(int)
-        for (cx_px, cy_px, r_px) in circles:
-            margin = int(CORNER_POCKET_RADIUS_MM * px_mm * 0.4)
-            if cx_px < margin or cx_px > w_px - margin or cy_px < margin or cy_px > h_px - margin:
-                continue
-
-            x_mm = cx_px / px_mm
-            y_mm = (h_px - cy_px) / px_mm
-            r_mm = r_px / px_mm
-            detected.append((x_mm, y_mm, r_mm))
-
-    # 2. Contour-based circular blob fallback
     hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     mask_felt = (
         cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |
@@ -248,32 +218,30 @@ def detect_balls_on_warped(
     )
     non_felt = ~mask_felt
 
-    margin_px = int(CORNER_POCKET_RADIUS_MM * px_mm * 0.6)
+    # Zero out regions outside playfield cushion margin
     non_felt[:margin_px, :] = 0
     non_felt[-margin_px:, :] = 0
     non_felt[:, :margin_px] = 0
     non_felt[:, -margin_px:] = 0
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     non_felt = cv2.morphologyEx(non_felt, cv2.MORPH_OPEN, kernel)
 
     contours, _ = cv2.findContours(non_felt, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detected: List[Tuple[float, float, float]] = []
+
     for c in contours:
         area = cv2.contourArea(c)
-        expected_area = math.pi * (expected_r_px ** 2)
-        if 0.3 * expected_area <= area <= 2.2 * expected_area:
+        if 0.15 * expected_area <= area <= 3.0 * expected_area:
             (cx_px, cy_px), r_px = cv2.minEnclosingCircle(c)
-            peri = cv2.arcLength(c, True)
-            if peri > 0:
-                circularity = 4 * math.pi * area / (peri * peri)
-                if circularity > 0.6:
-                    x_mm = cx_px / px_mm
-                    y_mm = (h_px - cy_px) / px_mm
-                    r_mm = r_px / px_mm
+            cx_px, cy_px, r_px = int(cx_px), int(cy_px), int(r_px)
+            x_mm = cx_px / px_mm
+            y_mm = (h_px - cy_px) / px_mm
+            r_mm = BALL_RADIUS_MM
 
-                    overlap = any(math.hypot(x_mm - ex, y_mm - ey) < BALL_DIAMETER_MM * 0.8 for (ex, ey, _) in detected)
-                    if not overlap:
-                        detected.append((x_mm, y_mm, r_mm))
+            # Avoid duplicates
+            if not any(math.hypot(x_mm - ex, y_mm - ey) < BALL_RADIUS_MM * 1.5 for (ex, ey, _) in detected):
+                detected.append((x_mm, y_mm, r_mm))
 
     return detected
 
@@ -322,7 +290,7 @@ def get_ball_white_ratio(roi: np.ndarray) -> float:
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     v = hsv[:, :, 2].astype(float)
     s = hsv[:, :, 1].astype(float)
-    white_pixels = (v > 140) & (s < 75)
+    white_pixels = (v > 140) & (s < 80)
     return float(np.sum(white_pixels)) / white_pixels.size
 
 
@@ -351,13 +319,13 @@ def classify_ball(
     red_dots_mask = ((h <= 10) | (h >= 160)) & (s > 80) & (v > 100)
     red_dots_ratio = float(np.sum(red_dots_mask)) / red_dots_mask.size
 
-    if white_ratio >= 0.65 and red_dots_ratio < 0.15:
+    if white_ratio >= 0.50 and red_dots_ratio < 0.20:
         return "cue"
 
     if mean_v < 70 and white_ratio < 0.15:
         return "eight"
 
-    white_mask = (v > 140) & (s < 75)
+    white_mask = (v > 140) & (s < 80)
     non_white_hsv = hsv[~white_mask] if np.sum(~white_mask) > 0 else hsv
     hue_name = _dominant_hue_name(non_white_hsv)
 
@@ -429,7 +397,7 @@ def analyse_image(
     else:
         cue_indices = [i for i, b in enumerate(candidate_balls) if b["label"] == "cue"]
         if not cue_indices:
-            high_white_indices = [i for i, b in enumerate(candidate_balls) if b["white_ratio"] > 0.55]
+            high_white_indices = [i for i, b in enumerate(candidate_balls) if b["white_ratio"] > 0.30]
             if high_white_indices:
                 best_idx = max(high_white_indices, key=lambda i: candidate_balls[i]["white_ratio"])
                 candidate_balls[best_idx]["label"] = "cue"
