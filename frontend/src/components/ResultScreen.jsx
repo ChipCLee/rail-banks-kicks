@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import ShotList from './ShotList';
-import { RotateCcw, Target } from 'lucide-react';
+import { RotateCcw, Target, AlertTriangle } from 'lucide-react';
 
 export default function ResultScreen({ result, onReset, onEnterTeachMode }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -8,6 +8,7 @@ export default function ResultScreen({ result, onReset, onEnterTeachMode }) {
   const directShots = result.direct_shots || [];
   const bankShots = result.bank_shots || [];
   const kickShots = result.kick_shots || [];
+  const totalShots = directShots.length + bankShots.length + kickShots.length;
 
   return (
     <div className="result-layout">
@@ -55,6 +56,27 @@ export default function ResultScreen({ result, onReset, onEnterTeachMode }) {
           </button>
         </div>
       </div>
+
+      {totalShots === 0 && (
+        <div 
+          style={{
+            background: 'rgba(245, 158, 11, 0.12)',
+            border: '1px solid var(--accent-yellow)',
+            borderRadius: 'var(--radius-md)',
+            padding: '12px 16px',
+            color: 'var(--text-main)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '0.9rem',
+          }}
+        >
+          <AlertTriangle size={22} color="var(--accent-yellow)" style={{ flexShrink: 0 }} />
+          <div>
+            <strong style={{ color: 'var(--accent-yellow)' }}>No valid shots found.</strong> Every possible path is obstructed or misses all pockets. Identified balls, pockets, and rail diamonds are rendered below.
+          </div>
+        </div>
+      )}
 
       <div className="annotated-image-card">
         {result.annotated_image_b64 ? (

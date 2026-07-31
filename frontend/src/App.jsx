@@ -26,16 +26,7 @@ export default function App() {
         return;
       }
 
-      const hasDirect = data.direct_shots && data.direct_shots.length > 0;
-      const hasBank = data.bank_shots && data.bank_shots.length > 0;
-      const hasKick = data.kick_shots && data.kick_shots.length > 0;
-
-      if (!hasDirect && !hasBank && !hasKick) {
-        setErrorMsg('No valid shots found — every possible shot path is blocked or misses all pockets.');
-        setStep('error');
-      } else {
-        setStep('result');
-      }
+      setStep('result');
     } catch (err) {
       setErrorMsg(err.message || 'Failed to analyze pool table image.');
       setStep('error');

@@ -1,11 +1,32 @@
 import React from 'react';
-import { Target, CornerDownRight, Zap } from 'lucide-react';
+import { Target, CornerDownRight, Zap, AlertTriangle } from 'lucide-react';
 
 export default function ShotList({ directShots = [], bankShots = [], kickShots = [], selectedIndex, onSelectShot }) {
   let currentIndex = 0;
+  const hasNoShots = directShots.length === 0 && bankShots.length === 0 && kickShots.length === 0;
 
   return (
     <div className="shot-list-container">
+      {hasNoShots && (
+        <div 
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius-md)',
+            padding: '24px 16px',
+            textAlign: 'center',
+            color: 'var(--text-muted)',
+            marginTop: '8px',
+          }}
+        >
+          <AlertTriangle size={32} color="var(--accent-yellow)" style={{ margin: '0 auto 8px auto', display: 'block' }} />
+          <h4 style={{ color: 'var(--text-main)', fontFamily: 'var(--font-heading)' }}>No Valid Shots Available</h4>
+          <p style={{ fontSize: '0.85rem', marginTop: '4px', maxWidth: '460px', margin: '4px auto 0 auto' }}>
+            Every direct, bank, and kick trajectory is either obstructed by another ball or misses all 6 pockets.
+          </p>
+        </div>
+      )}
+
       {directShots.length > 0 && (
         <div className="shot-group">
           <div className="group-title">
