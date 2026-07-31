@@ -35,7 +35,8 @@ class TestCVSimonisBlueEngine(unittest.TestCase):
         pockets = result["pockets"]
         diamonds = result["diamonds"]
         self.assertEqual(len(pockets), 6)
-        self.assertEqual(len(diamonds), 20)
+        self.assertEqual(len(diamonds), 18)
+
 
 
         # Verify Cue ball detection

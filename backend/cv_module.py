@@ -1,12 +1,11 @@
 """
 Computer Vision module for Rail-Kick.
 
-Implements:
-  1. Table boundary detection (multi-color felt masking: Green, Simonis Tournament Blue, Red/Burgundy → homography)
-  2. Ball detection (Playfield non-felt blob contours + HoughCircles)
-  3. Ball classification (HSV color profiling with support for red-dot / measles cue balls)
-  4. Diamond marker generation (for rails)
-  5. Perspective-corrected top-down image output + Teach Mode fallback
+Implements explicit CV rules:
+  1. Long rails have 3 pockets (Corner, Side, Corner) and 6 diamonds.
+  2. Short rails have 2 pockets (Corner, Corner) and 3 diamonds.
+  3. No ball is outside the table boundary.
+  4. Once the table is identified, only focus on the table and ignore all background.
 
 All measurements are in mm in table space.
 SPEC.md §Feature 1 – Ball Position Analysis.
@@ -109,11 +108,8 @@ def detect_table_and_warp(
     table_size: str = DEFAULT_TABLE,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
     """
-    Detect table boundary and return:
-      - warped: perspective-corrected top-down BGR image
-      - H: homography matrix
-      - dims: TableDims(width_mm, height_mm)
-      - is_portrait: bool matching original input image orientation
+    Rule 4: Once table boundary is identified, warp and focus ONLY on the table,
+    completely cropping out and ignoring all external background.
     """
     img_h, img_w = image_bgr.shape[:2]
     is_portrait = img_h > img_w
@@ -142,13 +138,19 @@ def detect_table_and_warp(
     if H is None:
         return None, None, None, is_portrait
 
+    # Warp perspective focusing exclusively on table interior
     warped = cv2.warpPerspective(image_bgr, H, (w_px, h_px))
     dims = TableDims(width=w_mm, height=h_mm)
     return warped, H, dims, is_portrait
 
 
 def build_pocket_list(dims: TableDims) -> List[Pocket]:
-    """Build six pocket positions in table mm space."""
+    """
+    Rule 1 & 2:
+    - Long rails have 3 pockets (Corner TL, Side ML, Corner BL; Corner TR, Side MR, Corner BR)
+    - Short rails have 2 pockets (Corner TL & TR on top; Corner BL & BR on bottom)
+    Total: 6 pockets.
+    """
     w = dims.width
     h = dims.height
     return [
@@ -163,21 +165,23 @@ def build_pocket_list(dims: TableDims) -> List[Pocket]:
 
 def build_diamond_list(dims: TableDims) -> List[DiamondMarker]:
     """
-    Build the list of diamond markers along the 4 rails.
-    - Long rails (TOP, BOTTOM): 7 diamonds (numbers 1, 2, 3, 4(side), 3, 2, 1)
-    - Short rails (LEFT, RIGHT): 3 diamonds (numbers 1, 2, 3)
+    Rule 1: Long rails have 6 diamonds (3 on each side of side pocket).
+    Rule 2: Short rails have 3 diamonds.
+    Total: 6 (TOP) + 6 (BOTTOM) + 3 (LEFT) + 3 (RIGHT) = 18 diamonds.
     """
     w = dims.width
     h = dims.height
     diamonds: List[DiamondMarker] = []
 
+    # Rule 1: Long rails (TOP & BOTTOM) - 6 diamonds per long rail
     seg_w = w / 8.0
-    for i in range(1, 8):
+    for i in [1, 2, 3, 5, 6, 7]:
         x_pos = round(i * seg_w, 1)
-        num = i * 0.5 if i <= 4 else (8 - i) * 0.5
+        num = (i * 0.5) if i <= 3 else ((8 - i) * 0.5)
         diamonds.append(DiamondMarker(rail="TOP", number=num, x=x_pos, y=h, label=f"{num} TOP"))
         diamonds.append(DiamondMarker(rail="BOTTOM", number=num, x=x_pos, y=0.0, label=f"{num} BTM"))
 
+    # Rule 2: Short rails (LEFT & RIGHT) - 3 diamonds per short rail
     seg_h = h / 4.0
     for i in range(1, 4):
         y_pos = round(i * seg_h, 1)
@@ -200,16 +204,17 @@ def detect_balls_on_warped(
     dims: TableDims,
 ) -> List[Tuple[float, float, float]]:
     """
-    Detect balls on top-down warped playfield using non-felt contour blob search
-    strictly constrained within the inner cushion playfield.
+    Detect balls strictly within table boundaries.
+    Rule 3: Discards any candidate ball center outside the table cushion playfield.
+    Rule 4: Ignores all non-table background.
     """
     px_mm = _px_per_mm_from_warped(warped, dims)
     expected_r_px = BALL_RADIUS_MM * px_mm
     expected_area = math.pi * (expected_r_px ** 2)
     h_px, w_px = warped.shape[0], warped.shape[1]
 
-    # Inner playfield cushion margin (100mm inside the outer table boundary)
-    margin_px = int(100.0 * px_mm)
+    # Playfield cushion margin (75mm inside outer table boundary)
+    margin_px = int(75.0 * px_mm)
 
     hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     mask_felt = (
@@ -218,7 +223,7 @@ def detect_balls_on_warped(
     )
     non_felt = ~mask_felt
 
-    # Zero out regions outside playfield cushion margin
+    # Rule 4: Zero out 100% of background outside the playfield cushions
     non_felt[:margin_px, :] = 0
     non_felt[-margin_px:, :] = 0
     non_felt[:, :margin_px] = 0
@@ -239,9 +244,10 @@ def detect_balls_on_warped(
             y_mm = (h_px - cy_px) / px_mm
             r_mm = BALL_RADIUS_MM
 
-            # Avoid duplicates
-            if not any(math.hypot(x_mm - ex, y_mm - ey) < BALL_RADIUS_MM * 1.5 for (ex, ey, _) in detected):
-                detected.append((x_mm, y_mm, r_mm))
+            # Rule 3: Strict assertion - No ball center is outside the table playfield
+            if BALL_RADIUS_MM <= x_mm <= dims.width - BALL_RADIUS_MM and BALL_RADIUS_MM <= y_mm <= dims.height - BALL_RADIUS_MM:
+                if not any(math.hypot(x_mm - ex, y_mm - ey) < BALL_RADIUS_MM * 1.5 for (ex, ey, _) in detected):
+                    detected.append((x_mm, y_mm, r_mm))
 
     return detected
 
@@ -358,6 +364,10 @@ def analyse_image(
     candidate_balls = []
 
     for (x_mm, y_mm, r_mm) in raw_balls:
+        # Rule 3: Enforce no ball is outside the table boundary
+        if not (BALL_RADIUS_MM <= x_mm <= dims.width - BALL_RADIUS_MM and BALL_RADIUS_MM <= y_mm <= dims.height - BALL_RADIUS_MM):
+            continue
+
         cx_px = int(x_mm * px_mm)
         cy_px = int(h_px - y_mm * px_mm)
         r_px  = int(r_mm * px_mm)
