@@ -265,28 +265,27 @@ def annotate_table(
         # Draw path
         pts_px = [_mm_to_px(pt.x, pt.y, dims, img.shape) for pt in shot.path]
         if shot.shot_type == "direct" and len(pts_px) >= 3:
-            # Cue -> Obj
-            cv2.arrowedLine(img, pts_px[0], pts_px[1], COLOR_BLUE_ARROW, 2, cv2.LINE_AA)
-            # Obj -> Pocket
-            _draw_dashed_line(img, pts_px[1], pts_px[2], COLOR_GREEN_ARROW, 2)
+            # Cue -> Target Obj: GREEN line
+            cv2.arrowedLine(img, pts_px[0], pts_px[1], (50, 205, 50), 3, cv2.LINE_AA)
+            # Target Obj -> Pocket: BLUE line
+            cv2.arrowedLine(img, pts_px[1], pts_px[2], (235, 130, 0), 3, cv2.LINE_AA)
         elif shot.shot_type == "one_bank" and len(pts_px) >= 4:
-            # Cue -> Obj
-            cv2.arrowedLine(img, pts_px[0], pts_px[1], COLOR_BLUE_ARROW, 2, cv2.LINE_AA)
-            # Obj -> Rail
-            _draw_dashed_line(img, pts_px[1], pts_px[2], COLOR_ORANGE_ARROW, 2)
+            # Cue -> Target Obj: GREEN line
+            cv2.arrowedLine(img, pts_px[0], pts_px[1], (50, 205, 50), 3, cv2.LINE_AA)
+            # Target Obj -> Rail: BLUE line
+            _draw_dashed_line(img, pts_px[1], pts_px[2], (235, 130, 0), 3)
             # Rail contact point
             cv2.circle(img, pts_px[2], 5, COLOR_WHITE, -1, cv2.LINE_AA)
-            # Rail -> Pocket
-            _draw_dashed_line(img, pts_px[2], pts_px[3], COLOR_GREEN_ARROW, 2)
+            # Rail -> Pocket: BLUE line
+            _draw_dashed_line(img, pts_px[2], pts_px[3], (235, 130, 0), 3)
         elif shot.shot_type == "one_rail_kick" and len(pts_px) >= 4:
-            # Cue -> Rail
-            cv2.arrowedLine(img, pts_px[0], pts_px[1], COLOR_BLUE_ARROW, 2, cv2.LINE_AA)
-            # Rail -> Obj
-            cv2.arrowedLine(img, pts_px[1], pts_px[2], COLOR_ORANGE_ARROW, 2, cv2.LINE_AA)
-            # Diamond marker
+            # Cue -> Rail -> Target Obj: GREEN line
+            cv2.arrowedLine(img, pts_px[0], pts_px[1], (50, 205, 50), 3, cv2.LINE_AA)
+            cv2.arrowedLine(img, pts_px[1], pts_px[2], (50, 205, 50), 3, cv2.LINE_AA)
             _draw_diamond_marker(img, pts_px[1], size=8)
-            # Obj -> Pocket
-            _draw_dashed_line(img, pts_px[2], pts_px[3], COLOR_GREEN_ARROW, 2)
+            # Target Obj -> Pocket: BLUE line
+            _draw_dashed_line(img, pts_px[2], pts_px[3], (235, 130, 0), 3)
+
 
     # Match original image orientation: rotate 90° if uploaded picture is portrait
     if is_portrait:
