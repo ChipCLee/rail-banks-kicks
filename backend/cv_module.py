@@ -124,6 +124,15 @@ def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) 
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     v_chan = hsv[:, :, 2]
 
+    # Non-felt mask for pocket cutout detection
+    mask_felt = (
+        cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |
+        cv2.inRange(hsv, np.array([85, 30, 30]), np.array([135, 255, 255])) |
+        cv2.inRange(hsv, np.array([0, 40, 30]), np.array([10, 255, 255])) |
+        cv2.inRange(hsv, np.array([160, 40, 30]), np.array([180, 255, 255]))
+    )
+    non_felt = ~mask_felt
+
     edges = [
         ("Top", rect[0], rect[1]),
         ("Right", rect[1], rect[2]),
@@ -131,7 +140,7 @@ def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) 
         ("Left", rect[0], rect[3]),
     ]
 
-    dark_scores = {}
+    pocket_scores = {}
     for name, p1, p2 in edges:
         mid_x = int((p1[0] + p2[0]) / 2.0)
         mid_y = int((p1[1] + p2[1]) / 2.0)
@@ -143,17 +152,20 @@ def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) 
         y1, y2 = max(0, mid_y - r), min(image_bgr.shape[0], mid_y + r)
 
         roi_v = v_chan[y1:y2, x1:x2]
-        if roi_v.size == 0:
-            dark_scores[name] = 0.0
-        else:
-            dark_ratio = float(np.sum(roi_v < 75)) / roi_v.size
-            dark_scores[name] = dark_ratio
+        roi_nf = non_felt[y1:y2, x1:x2]
 
-    vert_score = dark_scores["Left"] + dark_scores["Right"]
-    horiz_score = dark_scores["Top"] + dark_scores["Bottom"]
+        if roi_v.size == 0:
+            pocket_scores[name] = 0.0
+        else:
+            dark_ratio = float(np.sum(roi_v < 85)) / roi_v.size
+            non_felt_ratio = float(np.sum(roi_nf > 0)) / roi_nf.size
+            pocket_scores[name] = 0.6 * dark_ratio + 0.4 * non_felt_ratio
+
+    vert_score = pocket_scores["Left"] + pocket_scores["Right"]
+    horiz_score = pocket_scores["Top"] + pocket_scores["Bottom"]
 
     # Fallback to edge length ratio if pocket dark score is ambiguous / tied
-    if abs(vert_score - horiz_score) < 0.10:
+    if abs(vert_score - horiz_score) < 0.15:
         top_len = np.linalg.norm(rect[1] - rect[0])
         right_len = np.linalg.norm(rect[2] - rect[1])
         bottom_len = np.linalg.norm(rect[2] - rect[3])
@@ -161,6 +173,7 @@ def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) 
         return ((left_len + right_len) / 2.0) > ((top_len + bottom_len) / 2.0)
 
     return vert_score > horiz_score
+
 
 
 def detect_table_and_warp(
