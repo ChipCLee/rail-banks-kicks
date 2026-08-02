@@ -8,17 +8,16 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     if (!canvas || !result) return;
 
     const ctx = canvas.getContext('2d');
-    const isPortrait = !!result.is_portrait;
     const dims = result.table_dims_mm || { width: 2540.0, height: 1270.0 };
 
-    // Aspect ratio & canvas size
+    // Standardized horizontal landscape dimensions
     const pfWidthMm = dims.width;   // 2540.0 mm (Long dimension)
     const pfHeightMm = dims.height; // 1270.0 mm (Short dimension)
 
-    // Base layout units
+    // Base layout units (Standardized 2:1 horizontal aspect ratio)
     const margin = 46;
-    const pfW = isPortrait ? 460 : 920;
-    const pfH = isPortrait ? 920 : 460;
+    const pfW = 920;
+    const pfH = 460;
 
     canvas.width = pfW + 2 * margin;
     canvas.height = pfH + 2 * margin + 28; // +28 for top banner
@@ -42,19 +41,11 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     ctx.lineWidth = 4;
     ctx.strokeRect(pfX1, pfY1, pfW, pfH);
 
-    // Coordinate mapping (Table mm space -> Canvas px space)
+    // Coordinate mapping (Table mm space -> Canvas px space: x horizontal, y vertical)
     const mmToCanvas = (xMm, yMm) => {
-      if (isPortrait) {
-        // Portrait: y-axis goes horizontal (short: 0..1270), x-axis goes vertical (long: 0..2540)
-        const cX = pfX1 + (yMm / pfHeightMm) * pfW;
-        const cY = pfY2 - (xMm / pfWidthMm) * pfH;
-        return { x: cX, y: cY };
-      } else {
-        // Landscape: x-axis horizontal (long: 0..2540), y-axis vertical (short: 0..1270)
-        const cX = pfX1 + (xMm / pfWidthMm) * pfW;
-        const cY = pfY2 - (yMm / pfHeightMm) * pfH;
-        return { x: cX, y: cY };
-      }
+      const cX = pfX1 + (xMm / pfWidthMm) * pfW;
+      const cY = pfY2 - (yMm / pfHeightMm) * pfH;
+      return { x: cX, y: cY };
     };
 
     // 3. Draw Head String Line & Foot Spot
@@ -102,17 +93,10 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
       let textX = pt.x;
       let textY = pt.y;
 
-      if (isPortrait) {
-        if (d.rail === 'TOP') textX += 14;      // Right vertical long rail
-        else if (d.rail === 'BOTTOM') textX -= 14; // Left vertical long rail
-        else if (d.rail === 'RIGHT') textY -= 12;  // Top horizontal short rail
-        else if (d.rail === 'LEFT') textY += 12;   // Bottom horizontal short rail
-      } else {
-        if (d.rail === 'TOP') textY -= 12;      // Top horizontal long rail
-        else if (d.rail === 'BOTTOM') textY += 12; // Bottom horizontal long rail
-        else if (d.rail === 'LEFT') textX -= 14;   // Left vertical short rail
-        else if (d.rail === 'RIGHT') textX += 14;  // Right vertical short rail
-      }
+      if (d.rail === 'TOP') textY -= 12;          // Top horizontal long rail
+      else if (d.rail === 'BOTTOM') textY += 12;  // Bottom horizontal long rail
+      else if (d.rail === 'LEFT') textX -= 14;    // Left vertical short rail
+      else if (d.rail === 'RIGHT') textX += 14;   // Right vertical short rail
 
       ctx.fillText(String(d.number), textX, textY);
     });
@@ -278,7 +262,7 @@ export default function TableDiagramCanvas({ result, selectedShotIndex }) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(
-      `2D Diagram (9ft Simonis 860 Blue) | ${balls.length} Balls | Long Rails: 3 Pockets & 6 Diamonds | Short Rails: 2 Pockets & 3 Diamonds`,
+      `2D Diagram (9ft Simonis 860 Blue) | ${balls.length} Balls | Long Rails: Top & Bottom (3 Pockets, 6 Diamonds) | Short Rails: Left & Right (2 Pockets, 3 Diamonds)`,
       12,
       14
     );

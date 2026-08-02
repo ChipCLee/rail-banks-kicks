@@ -175,11 +175,7 @@ def render_2d_cv_diagram(
     header_text = f"Overhead 2D Schematic (9ft Simonis 860 Blue) | Balls: {len(balls)} | Pockets: {len(pockets)} | Diamonds: {len(diamonds)}"
     cv2.putText(img, header_text, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
 
-    # Match original image orientation: rotate 90° if uploaded picture is portrait
-    if is_portrait:
-        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-
-    # Encode JPEG
+    # Encode JPEG (standardized horizontal landscape orientation: Long rails Top/Bottom, Short rails Left/Right)
     _, buffer = cv2.imencode(".jpg", img)
     return base64.b64encode(buffer).decode("utf-8")
 
@@ -198,7 +194,7 @@ def annotate_table(
 ) -> str:
     """
     Annotate warped image with calculated shot paths and return base64 JPEG string.
-    Matches the orientation (portrait vs landscape) of the original uploaded photo.
+    Always uses standardized landscape orientation (Long rails Top/Bottom, Short rails Left/Right).
     """
     if kick_shots is None:
         kick_shots = []
@@ -286,11 +282,7 @@ def annotate_table(
             # Target Obj -> Pocket: BLUE line
             _draw_dashed_line(img, pts_px[2], pts_px[3], (235, 130, 0), 3)
 
-
-    # Match original image orientation: rotate 90° if uploaded picture is portrait
-    if is_portrait:
-        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-
-    # Encode JPEG
+    # Encode JPEG (standardized horizontal landscape orientation: Long rails Top/Bottom, Short rails Left/Right)
     _, buffer = cv2.imencode(".jpg", img)
     return base64.b64encode(buffer).decode("utf-8")
+
