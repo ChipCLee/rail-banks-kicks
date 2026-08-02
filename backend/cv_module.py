@@ -116,67 +116,79 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
 def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) -> bool:
     """
     Detect whether vertical rails (Left & Right) or horizontal rails (Top & Bottom)
-    are the LONG RAILS. Returns True if vertical rails are long rails (portrait layout),
-    False if horizontal rails are long rails (landscape layout).
+    are the LONG RAILS by perspective warping the felt contour into a 1:1 top-view space
+    and analyzing middle side pocket indicators on both horizontal and vertical edges.
+
+    Returns True if vertical rails are long rails (portrait layout), False if horizontal rails are long rails.
     """
-    img_h, img_w = image_bgr.shape[:2]
+    top_len = np.linalg.norm(rect[1] - rect[0])
+    right_len = np.linalg.norm(rect[2] - rect[1])
+    bottom_len = np.linalg.norm(rect[2] - rect[3])
+    left_len = np.linalg.norm(rect[3] - rect[0])
 
-    # Primary check: Smartphone camera portrait uploads (image height > image width)
-    if img_h > img_w:
-        return True
+    w_top = max(100, int((top_len + bottom_len) / 2.0))
+    h_top = max(100, int((left_len + right_len) / 2.0))
 
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    v_chan = hsv[:, :, 2]
+    # Top-view destination corners
+    dst_corners = np.array([
+        [0,     0    ],  # TL -> (0, 0)
+        [w_top, 0    ],  # TR -> (w_top, 0)
+        [w_top, h_top],  # BR -> (w_top, h_top)
+        [0,     h_top],  # BL -> (0, h_top)
+    ], dtype=np.float32)
 
-    # Non-felt mask for pocket cutout detection
+    H, _ = cv2.findHomography(rect, dst_corners)
+    if H is None:
+        return (left_len + right_len) > (top_len + bottom_len)
+
+    top_view = cv2.warpPerspective(image_bgr, H, (w_top, h_top))
+    hsv_top = cv2.cvtColor(top_view, cv2.COLOR_BGR2HSV)
+    v_chan = hsv_top[:, :, 2]
+
+    # Non-felt mask for pocket cutout detection in top-view space
     mask_felt = (
-        cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |
-        cv2.inRange(hsv, np.array([85, 30, 30]), np.array([135, 255, 255])) |
-        cv2.inRange(hsv, np.array([0, 40, 30]), np.array([10, 255, 255])) |
-        cv2.inRange(hsv, np.array([160, 40, 30]), np.array([180, 255, 255]))
+        cv2.inRange(hsv_top, np.array([30, 30, 30]), np.array([90, 255, 255])) |
+        cv2.inRange(hsv_top, np.array([85, 30, 30]), np.array([135, 255, 255])) |
+        cv2.inRange(hsv_top, np.array([0, 40, 30]), np.array([10, 255, 255])) |
+        cv2.inRange(hsv_top, np.array([160, 40, 30]), np.array([180, 255, 255]))
     )
     non_felt = ~mask_felt
 
-    edges = [
-        ("Top", rect[0], rect[1]),
-        ("Right", rect[1], rect[2]),
-        ("Bottom", rect[3], rect[2]),
-        ("Left", rect[0], rect[3]),
-    ]
+    # Sample ROIs around midpoints of top-view edges
+    r_w = max(10, int(w_top * 0.05))
+    r_h = max(10, int(h_top * 0.05))
 
-    pocket_scores = {}
-    for name, p1, p2 in edges:
-        mid_x = int((p1[0] + p2[0]) / 2.0)
-        mid_y = int((p1[1] + p2[1]) / 2.0)
+    top_v = v_chan[0:r_h, max(0, w_top//2 - r_w):min(w_top, w_top//2 + r_w)]
+    top_nf = non_felt[0:r_h, max(0, w_top//2 - r_w):min(w_top, w_top//2 + r_w)]
 
-        r = int(min(image_bgr.shape[:2]) * 0.04)
-        r = max(15, min(50, r))
+    btm_v = v_chan[max(0, h_top - r_h):h_top, max(0, w_top//2 - r_w):min(w_top, w_top//2 + r_w)]
+    btm_nf = non_felt[max(0, h_top - r_h):h_top, max(0, w_top//2 - r_w):min(w_top, w_top//2 + r_w)]
 
-        x1, x2 = max(0, mid_x - r), min(image_bgr.shape[1], mid_x + r)
-        y1, y2 = max(0, mid_y - r), min(image_bgr.shape[0], mid_y + r)
+    left_v = v_chan[max(0, h_top//2 - r_h):min(h_top, h_top//2 + r_h), 0:r_w]
+    left_nf = non_felt[max(0, h_top//2 - r_h):min(h_top, h_top//2 + r_h), 0:r_w]
 
-        roi_v = v_chan[y1:y2, x1:x2]
-        roi_nf = non_felt[y1:y2, x1:x2]
+    right_v = v_chan[max(0, h_top//2 - r_h):min(h_top, h_top//2 + r_h), max(0, w_top - r_w):w_top]
+    right_nf = non_felt[max(0, h_top//2 - r_h):min(h_top, h_top//2 + r_h), max(0, w_top - r_w):w_top]
 
-        if roi_v.size == 0:
-            pocket_scores[name] = 0.0
-        else:
-            dark_ratio = float(np.sum(roi_v < 85)) / roi_v.size
-            non_felt_ratio = float(np.sum(roi_nf > 0)) / roi_nf.size
-            pocket_scores[name] = 0.6 * dark_ratio + 0.4 * non_felt_ratio
+    def calc_score(v_roi, nf_roi):
+        if v_roi.size == 0:
+            return 0.0
+        dark_ratio = float(np.sum(v_roi < 85)) / v_roi.size
+        nf_ratio = float(np.sum(nf_roi > 0)) / nf_roi.size
+        return 0.6 * dark_ratio + 0.4 * nf_ratio
 
-    vert_score = pocket_scores["Left"] + pocket_scores["Right"]
-    horiz_score = pocket_scores["Top"] + pocket_scores["Bottom"]
+    s_top = calc_score(top_v, top_nf)
+    s_btm = calc_score(btm_v, btm_nf)
+    s_left = calc_score(left_v, left_nf)
+    s_right = calc_score(right_v, right_nf)
 
-    # Fallback to edge length ratio if pocket dark score is ambiguous / tied
-    if abs(vert_score - horiz_score) < 0.15:
-        top_len = np.linalg.norm(rect[1] - rect[0])
-        right_len = np.linalg.norm(rect[2] - rect[1])
-        bottom_len = np.linalg.norm(rect[2] - rect[3])
-        left_len = np.linalg.norm(rect[3] - rect[0])
-        return ((left_len + right_len) / 2.0) > ((top_len + bottom_len) / 2.0)
+    horiz_score = s_top + s_btm
+    vert_score = s_left + s_right
 
-    return vert_score > horiz_score
+    return bool(vert_score > horiz_score)
+
+
+
 
 
 
