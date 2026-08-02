@@ -116,11 +116,15 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
 def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) -> bool:
     """
     Detect whether vertical rails (Left & Right) or horizontal rails (Top & Bottom)
-    are the LONG RAILS by detecting the presence of middle side pockets.
-      - Long rails have 3 pockets (Corner, Middle Side, Corner).
-      - Short rails have 2 pockets (Corner, Corner).
-    Returns True if vertical rails are long rails (portrait layout), False if horizontal rails are long rails.
+    are the LONG RAILS. Returns True if vertical rails are long rails (portrait layout),
+    False if horizontal rails are long rails (landscape layout).
     """
+    img_h, img_w = image_bgr.shape[:2]
+
+    # Primary check: Smartphone camera portrait uploads (image height > image width)
+    if img_h > img_w:
+        return True
+
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
     v_chan = hsv[:, :, 2]
 
@@ -173,6 +177,7 @@ def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) 
         return ((left_len + right_len) / 2.0) > ((top_len + bottom_len) / 2.0)
 
     return vert_score > horiz_score
+
 
 
 
