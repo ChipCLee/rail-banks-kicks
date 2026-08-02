@@ -5,7 +5,10 @@ Implements explicit CV rules:
   1. Long rails have 3 pockets (Corner, Middle Side, Corner) and 6 diamonds.
   2. Short rails have 2 pockets (Corner, Corner) and 3 diamonds.
   3. No ball is outside the table boundary.
-  4. Once the table is identified, only focus on the table and ignore all background.
+  4. Once the table is identified, focus ONLY on the table and ignore all background.
+  5. Automatically detects portrait table orientation and rotates the image 90° clockwise
+     so that Long Rails are ALWAYS at the Top & Bottom and Short Rails are at the Left & Right,
+     ensuring the camera photo and 2D diagram share the exact same horizontal landscape orientation.
 
 All measurements are in mm in table space.
 SPEC.md §Feature 1 – Ball Position Analysis.
@@ -116,28 +119,17 @@ def detect_table_and_warp(
     felt_color: str = "auto",
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
     """
-    Rule 4: Once table boundary is identified, warp and focus ONLY on the table,
-    completely cropping out and ignoring all external background.
+    Detect table boundary, rotate portrait input images to standardized landscape orientation
+    (Long Rails at Top & Bottom, Short Rails at Left & Right), and return perspective warped image.
     """
-    img_h, img_w = image_bgr.shape[:2]
-    is_portrait = img_h > img_w
-
-    config = TABLE_CONFIGS.get(table_size, TABLE_CONFIGS[DEFAULT_TABLE])
-    w_mm = config["width_mm"]
-    h_mm = config["height_mm"]
-
-    px_per_mm = 4.0
-    w_px = int(w_mm * px_per_mm)
-    h_px = int(h_mm * px_per_mm)
-
     contour = _detect_felt_contour(image_bgr, felt_color=felt_color)
-
     if contour is None:
-        return None, None, None, is_portrait
+        img_h, img_w = image_bgr.shape[:2]
+        return None, None, None, img_h > img_w
 
     src_pts = _order_corners(contour)
 
-    # Check felt contour edge lengths to determine if table in photo is horizontal (landscape) or vertical (portrait)
+    # Measure felt contour edges in original image
     top_len = np.linalg.norm(src_pts[1] - src_pts[0])
     right_len = np.linalg.norm(src_pts[2] - src_pts[1])
     bottom_len = np.linalg.norm(src_pts[2] - src_pts[3])
@@ -148,31 +140,36 @@ def detect_table_and_warp(
     is_portrait_felt = vert_len > horiz_len
 
     if is_portrait_felt:
-        # Photo Top edge is Short Rail (h_mm=1270), Left edge is Long Rail (w_mm=2540)
-        # Map photo corners to canonical table space (x in [0, w_mm], y in [0, h_mm]):
-        dst_pts = np.array([
-            [0,    h_px],  # Photo TL -> Table (x=0, y=h) [TL]
-            [0,    0   ],  # Photo TR -> Table (x=0, y=0) [BL]
-            [w_px, 0   ],  # Photo BR -> Table (x=w, y=0) [BR]
-            [w_px, h_px],  # Photo BL -> Table (x=w, y=h) [TR]
-        ], dtype=np.float32)
-    else:
-        # Photo Top edge is Long Rail (w_mm=2540), Left edge is Short Rail (h_mm=1270)
-        dst_pts = np.array([
-            [0,    h_px],  # Photo TL -> Table (x=0, y=h) [TL]
-            [w_px, h_px],  # Photo TR -> Table (x=w, y=h) [TR]
-            [w_px, 0   ],  # Photo BR -> Table (x=w, y=0) [BR]
-            [0,    0   ],  # Photo BL -> Table (x=0, y=0) [BL]
-        ], dtype=np.float32)
+        # Rotate image 90° clockwise so Long Rails become Top & Bottom
+        image_bgr = cv2.rotate(image_bgr, cv2.ROTATE_90_CLOCKWISE)
+        contour = _detect_felt_contour(image_bgr, felt_color=felt_color)
+        if contour is None:
+            return None, None, None, True
+        src_pts = _order_corners(contour)
+
+    config = TABLE_CONFIGS.get(table_size, TABLE_CONFIGS[DEFAULT_TABLE])
+    w_mm = config["width_mm"]   # 2540.0 mm (Long dimension)
+    h_mm = config["height_mm"]  # 1270.0 mm (Short dimension)
+
+    px_per_mm = 4.0
+    w_px = int(w_mm * px_per_mm) # 10160 px
+    h_px = int(h_mm * px_per_mm) # 5080 px
+
+    # Standard landscape destination points (Long Rails Top/Bottom, Short Rails Left/Right):
+    dst_pts = np.array([
+        [0,    h_px],  # Photo TL -> Table (x=0, y=h) [TL]
+        [w_px, h_px],  # Photo TR -> Table (x=w, y=h) [TR]
+        [w_px, 0   ],  # Photo BR -> Table (x=w, y=0) [BR]
+        [0,    0   ],  # Photo BL -> Table (x=0, y=0) [BL]
+    ], dtype=np.float32)
 
     H, _ = cv2.findHomography(src_pts, dst_pts)
     if H is None:
-        return None, None, None, is_portrait
+        return None, None, None, is_portrait_felt
 
-    # Warp perspective focusing exclusively on table interior
     warped = cv2.warpPerspective(image_bgr, H, (w_px, h_px))
     dims = TableDims(width=w_mm, height=h_mm)
-    return warped, H, dims, is_portrait
+    return warped, H, dims, is_portrait_felt
 
 
 def build_pocket_list(dims: TableDims) -> List[Pocket]:
@@ -385,7 +382,6 @@ def analyse_image(
     warped, H, dims, is_portrait = detect_table_and_warp(image_bgr, felt_color=felt_color)
     if warped is None or dims is None:
         return None
-
 
     pockets = build_pocket_list(dims)
     diamonds = build_diamond_list(dims)
