@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 2643 2641" width="2643" height="2641">
+  <image href="images/train/example.jpg" xlink:href="images/train/example.jpg"
+         x="0" y="0" width="2643" height="2641"/>
+
+  <!-- Class 0: table segmentation polygon -->
+  <polygon points="106,809 2014,323 2012,2285 159,1761"
+           fill="#00ff8840" stroke="#00ff88" stroke-width="12"/>
+
+  <!-- Class 1: cue_ball -->
+  <circle cx="391" cy="943" r="25"
+          fill="#ffff0040" stroke="#ffff00" stroke-width="8"/>
+
+  <!-- Class 3: object_ball instances -->
+  <circle cx="1196" cy="1139" r="44"
+          fill="#ff335540" stroke="#ff3355" stroke-width="8"/>
+  <circle cx="1118" cy="1245" r="37"
+          fill="#ff335540" stroke="#ff3355" stroke-width="8"/>
+  <circle cx="803" cy="1874" r="31"
+          fill="#ff335540" stroke="#ff3355" stroke-width="8"/>
+
+  <g font-family="Arial, sans-serif" font-size="40" font-weight="bold"
+     paint-order="stroke" stroke="#000" stroke-width="8" fill="#fff">
+    <text x="125" y="780">0 table</text>
+    <text x="420" y="930">1 cue_ball</text>
+    <text x="1250" y="1125">3 object_ball</text>
+    <text x="1165" y="1305">3 object_ball</text>
+    <text x="845" y="1925">3 object_ball</text>
+  </g>
+</svg>

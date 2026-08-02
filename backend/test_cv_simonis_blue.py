@@ -1,11 +1,12 @@
 """
-CV Engine Integration Unit Tests using Simonis 860 Tournament Blue Table Fixture.
-Tests boundary detection, felt_color options, pocket/diamond positioning, and cue + object ball detection.
+CV engine compatibility tests using the Simonis blue table fixture and injected
+YOLO predictions. Real checkpoint quality is validated outside deterministic CI.
 """
 import os
 import unittest
 import cv2
 from cv_module import analyse_image
+from test_support import FakePoolDetector
 
 
 class TestCVSimonisBlueEngine(unittest.TestCase):
@@ -23,7 +24,7 @@ class TestCVSimonisBlueEngine(unittest.TestCase):
         if not self.image_exists or self.img_bgr is None:
             self.skipTest("Fixture image 'fixtures/simonis_blue_table.jpg' not found.")
 
-        result = analyse_image(self.img_bgr, felt_color="auto")
+        result = analyse_image(self.img_bgr, felt_color="auto", detector=FakePoolDetector())
         self.assertIsNotNone(result, "analyse_image returned None on Simonis Blue table fixture with felt_color=auto")
 
         # Verify table dimensions
@@ -48,7 +49,7 @@ class TestCVSimonisBlueEngine(unittest.TestCase):
         if not self.image_exists or self.img_bgr is None:
             self.skipTest("Fixture image 'fixtures/simonis_blue_table.jpg' not found.")
 
-        result = analyse_image(self.img_bgr, felt_color="blue")
+        result = analyse_image(self.img_bgr, felt_color="blue", detector=FakePoolDetector())
         self.assertIsNotNone(result, "analyse_image returned None on Simonis Blue table fixture with felt_color=blue")
         self.assertTrue(result["cue_detected"])
 

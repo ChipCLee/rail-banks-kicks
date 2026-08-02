@@ -15,3 +15,10 @@ dist/
 build/
 .DS_Store
 *.log
+
+# Local training data, runs, and model artifacts
+backend/datasets/*
+!backend/datasets/rail_kick_example/
+!backend/datasets/rail_kick_example/**
+backend/runs/
+backend/weights/*.pt

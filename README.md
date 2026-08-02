@@ -10,7 +10,8 @@
 - **One-Bank Shot Detection (v1)**: Calculates object ball reflection trajectories off all 4 rails into target pockets, sorted by ease score ($|\text{angle} - 90^\circ|$).
 - **One-Rail Kick Shot Detection (v2)**: Calculates cue ball kick trajectories off rail cushions to strike object balls, formatted with **diamond marker labels** (e.g. `2.5 diamonds from TL on TOP rail`).
 - **Cushion Throw Correction (v2)**: Applies empirical friction correction to rebound angles at shallow impact angles.
-- **Computer Vision Pipeline**: Automatic green-felt table boundary detection via HSV masking, homography perspective warping, HoughCircles ball detection, and HSV color/type classification (`cue`, `eight`, `solid-<hue>`, `stripe-<hue>`).
+- **YOLOv8-small Vision Pipeline**: Custom YOLOv8s segmentation detects the table and balls, OpenCV performs homography/metric mapping, and automatic device selection uses NVIDIA CUDA, Apple MPS, or CPU.
+- **iPhone Camera Input**: Applies EXIF orientation, accepts HEIC/HEIF as well as JPEG/PNG/WEBP, and bounds high-resolution camera images before inference.
 - **Mobile-First Responsive UI**: Interactive top-down annotated table view with tap-to-highlight shot visualization.
 
 ---
@@ -28,7 +29,8 @@
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                Python FastAPI Backend (Port 8000)           │
-│  • OpenCV computer vision table & ball detection            │
+│  • Custom YOLOv8s segmentation on CUDA / MPS / CPU          │
+│  • OpenCV perspective correction and metric mapping         │
 │  • Vector geometry & reflection physics engine              │
 │  • Top-down annotated image renderer (Base64 JPEG)          │
 └─────────────────────────────────────────────────────────────┘
@@ -38,7 +40,8 @@
 
 ## Quick Start (Docker Compose)
 
-The fastest way to run the entire application (Backend + Frontend) is using Docker Compose:
+The default Compose stack runs the portable CPU backend. Copy the validated custom
+checkpoint to `backend/weights/rail_kick_yolov8s_seg.pt` before starting it:
 
 ```bash
 # Clone the repository
@@ -57,30 +60,51 @@ docker-compose up --build
 
 ## Local Development Setup
 
-### 1. Backend Setup (FastAPI + OpenCV)
+### 1. Backend Setup (FastAPI + YOLOv8s)
 
-**Prerequisites**: Python 3.10+ installed.
+**Prerequisite**: `uv` installed. The backend pins Python 3.11 in
+`backend/.python-version`; `uv` creates and manages the project environment.
 
 ```bash
 cd backend
 
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+# Create/update .venv from the committed lockfile
+uv sync --frozen
 
-# Install dependencies
-pip install -r requirements.txt
+# Required custom checkpoint (stock COCO weights are not compatible)
+export YOLO_MODEL_PATH="$PWD/weights/rail_kick_yolov8s_seg.pt"
 
 # Run backend development server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+Device selection defaults to NVIDIA CUDA, then Apple MPS, then CPU. Override it
+with `CV_DEVICE=auto|cuda|mps|cpu`. On Apple Silicon, run the backend natively;
+Linux containers under Docker Desktop do not expose Metal/MPS.
+
+For an NVIDIA host with the NVIDIA Container Toolkit:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up --build
+```
+
+The custom checkpoint is trained from `yolov8s-seg.pt` using the mutually
+exclusive classes `table`, `cue_ball`, `eight_ball`, and `object_ball`:
+
+```bash
+cd backend
+uv run python train_yolo.py --data training/rail_kick.yaml --device mps  # Apple Silicon
+uv run python train_yolo.py --data training/rail_kick.yaml --device 0    # NVIDIA
+```
+
+See [TRAIN.md](TRAIN.md) for dataset layout, segmentation rules, validation
+gates, checkpoint promotion, and troubleshooting.
 
 #### Running Backend Unit Tests
 
 ```bash
 cd backend
-source .venv/bin/activate
-python3 -m unittest discover -p "test_*.py"
+uv run python -m unittest discover -p "test_*.py"
 ```
 
 ---
@@ -110,7 +134,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 Upload a pool table image for analysis.
 
 - **Content-Type**: `multipart/form-data`
-- **Body**: `image` (JPG, PNG, or WEBP file, $\le 20\text{ MB}$)
+- **Body**: `image` (JPG, PNG, WEBP, HEIC, or HEIF file, $\le 20\text{ MB}$)
 
 #### Response (`200 OK`)
 
@@ -158,19 +182,34 @@ Upload a pool table image for analysis.
 
 ```
 rail-kick/
-├── SPEC.md                      # Technical specification (v0.6)
+├── SPEC.md                      # Technical specification (v0.7)
+├── TRAIN.md                     # Custom YOLOv8s dataset and training guide
 ├── E2E_TEST_CASES.md            # Comprehensive E2E test suite (37 test cases)
 ├── docker-compose.yml           # Docker orchestration file
+├── images/                      # Source camera photographs
+│   ├── IMG_5305.HEIC            # iPhone HEIC training source
+│   ├── IMG_5306.HEIC            # iPhone HEIC training source
+│   ├── IMG_5307.HEIC            # iPhone HEIC training source
+│   ├── example.jpg              # iPhone landscape table example
+│   └── example_1.jpg            # iPhone portrait table example
 ├── backend/
 │   ├── main.py                  # FastAPI REST endpoints
 │   ├── models.py                # Pydantic data schemas
 │   ├── geometry.py              # Direct & bank shot vector geometry
-│   ├── cv_module.py             # OpenCV table boundary & ball detection
+│   ├── cv_module.py             # YOLOv8s inference and OpenCV metric mapping
+│   ├── image_input.py           # EXIF/HEIC camera image normalization
+│   ├── train_yolo.py            # Custom segmentation training entry point
+│   ├── edit_yolo_pairs.py       # Interactive image/segmentation-label editor
+│   ├── training/                # Dataset schema
+│   ├── weights/                 # Runtime custom checkpoint mount point
 │   ├── v2_kick_shots.py         # Kick shot detection & diamond calculation
 │   ├── cushion_throw.py         # Cushion throw empirical model
 │   ├── annotate.py              # Top-down visual overlay renderer
-│   ├── requirements.txt         # Python dependencies
+│   ├── pyproject.toml           # Python project and dependency declarations
+│   ├── uv.lock                  # Cross-platform locked Python dependencies
+│   ├── .python-version          # uv-managed Python version
 │   ├── Dockerfile               # Backend Docker container
+│   ├── Dockerfile.nvidia        # NVIDIA CUDA backend container
 │   ├── test_geometry.py         # Geometry unit tests
 │   ├── test_v2_kick.py          # Kick shot unit tests
 │   └── test_v2_throw.py         # Cushion throw unit tests
@@ -194,4 +233,6 @@ rail-kick/
 
 ## License
 
-MIT License
+Rail-Kick source code is MIT licensed. Ultralytics and model artifacts have their
+own license terms; confirm that the Ultralytics license selected for training and
+deployment is compatible with the intended distribution.

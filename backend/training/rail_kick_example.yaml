@@ -1,0 +1,10 @@
+# Educational one-image dataset. Do not use it to produce a release checkpoint.
+path: datasets/rail_kick_example
+train: images/train
+val: images/train
+
+names:
+  0: table
+  1: cue_ball
+  2: eight_ball
+  3: object_ball

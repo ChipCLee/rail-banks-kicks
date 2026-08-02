@@ -1,0 +1,11 @@
+# Dataset root is relative to this YAML file unless replaced with an absolute path.
+path: datasets/rail_kick
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: table
+  1: cue_ball
+  2: eight_ball
+  3: object_ball

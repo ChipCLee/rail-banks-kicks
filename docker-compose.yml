@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build: ./backend
@@ -8,6 +6,8 @@ services:
     environment:
       - PORT=8000
       - HOST=0.0.0.0
+      - CV_DEVICE=cpu
+      - YOLO_MODEL_PATH=/app/weights/rail_kick_yolov8s_seg.pt
 
   frontend:
     build:

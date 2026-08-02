@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>YOLO segmentation pair viewer</title>
+  <style>
+    :root { color-scheme: light dark; --fill-opacity:.24; --page:#f5f7fa; --panel:#fff;
+      --text:#15202b; --muted:#5b6875; --border:#d8dee6; --good:#087f5b; }
+    @media (prefers-color-scheme:dark) { :root { --page:#11161c; --panel:#1b222b;
+      --text:#edf2f7; --muted:#aab6c2; --border:#384553; --good:#5ee0b1; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--page); color:var(--text);
+      font:15px/1.45 system-ui,-apple-system,sans-serif; }
+    main { max-width:1500px; margin:auto; padding:24px; }
+    h1 { margin:0 0 4px; font-size:24px; } .subtitle { color:var(--muted); margin:0 0 18px; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:12px 14px;
+      background:var(--panel); border:1px solid var(--border); border-radius:10px; }
+    .toolbar label { display:flex; gap:8px; align-items:center; } input[type=range] { width:150px; }
+    .legend { display:flex; flex-wrap:wrap; gap:12px; margin:14px 0; color:var(--muted); }
+    .legend span,.badge { display:inline-flex; align-items:center; gap:6px; }
+    i { width:11px; height:11px; border-radius:3px; background:var(--badge-color); display:inline-block; }
+    .valid { color:var(--good); } details { border-left:4px solid #dc3545; padding-left:12px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr)); gap:18px; }
+    .pair-card { min-width:0; background:var(--panel); border:1px solid var(--border);
+      border-radius:12px; overflow:hidden; }
+    .pair-card header { padding:10px 12px; display:flex; justify-content:space-between; gap:12px; }
+    .pair-card header span,.pair-card code { color:var(--muted); }
+    .frame { position:relative; background:#080b0e; } .frame img { width:100%; height:auto; display:block; }
+    .frame svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+    polygon { fill:var(--instance-color); fill-opacity:var(--fill-opacity); stroke:var(--instance-color);
+      stroke-width:3; vector-effect:non-scaling-stroke; pointer-events:all; }
+    body.hide-fill polygon { fill-opacity:0; } body.hide-overlay svg { display:none; }
+    .badges { display:flex; flex-wrap:wrap; gap:10px; padding:10px 12px 4px; }
+    .pair-card code { display:block; padding:5px 12px 12px; overflow-wrap:anywhere; font-size:12px; }
+    .empty { padding:24px; background:var(--panel); border:1px solid var(--border); border-radius:10px; }
+    @media (max-width:600px) { main { padding:14px; } .toolbar { align-items:flex-start; flex-direction:column; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>YOLO segmentation pairs</h1>
+    <p class="subtitle">1 paired images · 5 instances</p>
+    <section class="toolbar" aria-label="Overlay controls">
+      <label>Mask opacity <input id="opacity" type="range" min="0" max="0.7" value="0.24" step="0.02"><output id="opacity-value">24%</output></label>
+      <label><input id="fill" type="checkbox" checked> Show mask fill</label>
+      <label><input id="overlay" type="checkbox" checked> Show polygons</label>
+    </section>
+    <div class="legend"><span><i style="--badge-color:#00b87a"></i>0 table</span><span><i style="--badge-color:#e6b800"></i>1 cue_ball</span><span><i style="--badge-color:#8b5cf6"></i>2 eight_ball</span><span><i style="--badge-color:#ef476f"></i>3 object_ball</span></div>
+    <section><p class="valid">All discovered pairs and polygons are structurally valid.</p></section>
+    <section class="grid">
+      <article class="pair-card">
+        <header><strong>example.jpg</strong><span>5 instances</span></header>
+        <div class="frame">
+          <img src="images/train/example.jpg" alt="example.jpg" loading="lazy">
+          <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Segmentation polygons">
+            <polygon points="0.040106,0.306323 0.762013,0.122302 0.761256,0.865203 0.060159,0.666793" style="--instance-color:#00b87a"><title>0 table · label line 1</title></polygon><polygon points="0.157397,0.357062 0.156677,0.360684 0.154626,0.363755 0.151558,0.365807 0.147938,0.366528 0.144318,0.365807 0.141249,0.363755 0.139199,0.360684 0.138479,0.357062 0.139199,0.353439 0.141249,0.350368 0.144318,0.348316 0.147938,0.347596 0.151558,0.348316 0.154626,0.350368 0.156677,0.353439" style="--instance-color:#e6b800"><title>1 cue_ball · label line 2</title></polygon><polygon points="0.469164,0.431276 0.467897,0.437652 0.464288,0.443057 0.458887,0.446668 0.452516,0.447936 0.446145,0.446668 0.440744,0.443057 0.437136,0.437652 0.435868,0.431276 0.437136,0.424900 0.440744,0.419495 0.446145,0.415884 0.452516,0.414616 0.458887,0.415884 0.464288,0.419495 0.467897,0.424900" style="--instance-color:#ef476f"><title>3 object_ball · label line 3</title></polygon><polygon points="0.437003,0.471412 0.435938,0.476774 0.432903,0.481319 0.428361,0.484356 0.423004,0.485422 0.417647,0.484356 0.413105,0.481319 0.410071,0.476774 0.409005,0.471412 0.410071,0.466051 0.413105,0.461506 0.417647,0.458469 0.423004,0.457402 0.428361,0.458469 0.432903,0.461506 0.435938,0.466051" style="--instance-color:#ef476f"><title>3 object_ball · label line 4</title></polygon><polygon points="0.315551,0.709580 0.314658,0.714072 0.312115,0.717880 0.308310,0.720424 0.303821,0.721318 0.299333,0.720424 0.295528,0.717880 0.292985,0.714072 0.292092,0.709580 0.292985,0.705088 0.295528,0.701280 0.299333,0.698735 0.303821,0.697842 0.308310,0.698735 0.312115,0.701280 0.314658,0.705088" style="--instance-color:#ef476f"><title>3 object_ball · label line 5</title></polygon>
+          </svg>
+        </div>
+        <div class="badges"><span class="badge"><i style="--badge-color:#00b87a"></i>table × 1</span><span class="badge"><i style="--badge-color:#e6b800"></i>cue_ball × 1</span><span class="badge"><i style="--badge-color:#ef476f"></i>object_ball × 3</span></div>
+        <code>example.txt</code>
+      </article>
+    </section>
+  </main>
+  <script>
+    const opacity = document.getElementById('opacity');
+    const output = document.getElementById('opacity-value');
+    opacity.addEventListener('input', () => {
+      document.documentElement.style.setProperty('--fill-opacity', opacity.value);
+      output.value = `${Math.round(Number(opacity.value) * 100)}%`;
+    });
+    document.getElementById('fill').addEventListener('change', event =>
+      document.body.classList.toggle('hide-fill', !event.target.checked));
+    document.getElementById('overlay').addEventListener('change', event =>
+      document.body.classList.toggle('hide-overlay', !event.target.checked));
+  </script>
+</body>
+</html>

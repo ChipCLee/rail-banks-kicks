@@ -1,0 +1,9 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.nvidia
+    environment:
+      CV_DEVICE: cuda
+      YOLO_MODEL_PATH: /app/weights/rail_kick_yolov8s_seg.pt
+    gpus: all

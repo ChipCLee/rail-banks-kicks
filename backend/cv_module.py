@@ -1,14 +1,10 @@
 """
-Computer Vision module for Rail-Kick.
+YOLOv8-small computer-vision module for Rail-Kick.
 
-Implements explicit CV rules:
-  1. Long rails have 3 pockets (Corner, Middle Side, Corner) and 6 diamonds.
-  2. Short rails have 2 pockets (Corner, Corner) and 3 diamonds.
-  3. No ball is outside the table boundary.
-  4. Once the table is identified, focus ONLY on the table and ignore all background.
-  5. Uses Side Pocket detection along rail midpoints to identify Long Rails (3 pockets)
-     vs Short Rails (2 pockets), rotating portrait images 90° clockwise so Long Rails
-     are ALWAYS at the Top & Bottom and Short Rails are at the Left & Right.
+A custom segmentation model identifies the table and balls. OpenCV reduces the
+table mask to four corners, rectifies it to a top-down 2:1 playfield, classifies
+generic object-ball crops, and maps centres into millimetres. The API always
+normalizes long rails to the top and bottom of the warped image.
 
 All measurements are in mm in table space.
 SPEC.md §Feature 1 – Ball Position Analysis.
@@ -16,7 +12,11 @@ SPEC.md §Feature 1 – Ball Position Analysis.
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+import os
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, List, Optional, Protocol, Tuple
 
 import cv2
 import numpy as np
@@ -39,9 +39,207 @@ BALL_RADIUS_MM = BALL_DIAMETER_MM / 2.0
 CORNER_POCKET_RADIUS_MM = 57.0
 SIDE_POCKET_RADIUS_MM = 63.0
 
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "weights" / "rail_kick_yolov8s_seg.pt"
+DEFAULT_INFERENCE_SIZE = 1280
+DEFAULT_WARP_WIDTH_PX = 2560
+
+
+class ModelUnavailableError(RuntimeError):
+    """Raised when the configured YOLO model cannot serve inference."""
+
+
+@dataclass(frozen=True)
+class YoloDetection:
+    """Model-independent representation of one YOLO segmentation result."""
+
+    label: str
+    confidence: float
+    xyxy: Tuple[float, float, float, float]
+    polygon: Optional[np.ndarray] = None
+
+
+class Detector(Protocol):
+    device: str
+
+    def predict(self, image_bgr: np.ndarray) -> List[YoloDetection]: ...
+
+
+def select_inference_device(torch_module: Any = None, requested: Optional[str] = None) -> str:
+    """Select CUDA, Apple MPS, or CPU, with an explicit environment override."""
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError as exc:  # pragma: no cover - dependency packaging failure
+            raise ModelUnavailableError("PyTorch is not installed.") from exc
+
+    choice = (requested or os.getenv("CV_DEVICE", "auto")).strip().lower()
+    if choice not in {"auto", "cuda", "mps", "cpu"}:
+        raise ModelUnavailableError("CV_DEVICE must be one of: auto, cuda, mps, cpu.")
+
+    cuda_available = bool(torch_module.cuda.is_available())
+    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    mps_available = bool(mps_backend and mps_backend.is_available())
+
+    if choice == "cuda":
+        if not cuda_available:
+            raise ModelUnavailableError("CV_DEVICE=cuda was requested, but CUDA is unavailable.")
+        return "cuda:0"
+    if choice == "mps":
+        if not mps_available:
+            raise ModelUnavailableError("CV_DEVICE=mps was requested, but Apple MPS is unavailable.")
+        return "mps"
+    if choice == "cpu":
+        return "cpu"
+    if cuda_available:
+        return "cuda:0"
+    if mps_available:
+        return "mps"
+    return "cpu"
+
+
+_LABEL_ALIASES = {
+    "table": "table",
+    "pool_table": "table",
+    "billiards_table": "table",
+    "cue": "cue_ball",
+    "cue_ball": "cue_ball",
+    "white_ball": "cue_ball",
+    "8_ball": "eight_ball",
+    "eight": "eight_ball",
+    "eight_ball": "eight_ball",
+    "ball": "object_ball",
+    "pool_ball": "object_ball",
+    "object_ball": "object_ball",
+    "solid": "solid_ball",
+    "solid_ball": "solid_ball",
+    "stripe": "striped_ball",
+    "striped": "striped_ball",
+    "striped_ball": "striped_ball",
+}
+
+
+class YoloV8SmallDetector:
+    """Thread-safe Ultralytics YOLOv8s segmentation adapter loaded once per process."""
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        *,
+        device: Optional[str] = None,
+        inference_size: Optional[int] = None,
+    ) -> None:
+        path = Path(model_path or os.getenv("YOLO_MODEL_PATH", str(DEFAULT_MODEL_PATH))).expanduser()
+        if not path.is_file():
+            raise ModelUnavailableError(
+                f"Custom YOLOv8s weights were not found at '{path}'. Set YOLO_MODEL_PATH."
+            )
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:  # pragma: no cover - dependency packaging failure
+            raise ModelUnavailableError("The ultralytics package is not installed.") from exc
+
+        self.model_path = path
+        self.device = device or select_inference_device()
+        try:
+            self.inference_size = inference_size or int(
+                os.getenv("YOLO_IMAGE_SIZE", str(DEFAULT_INFERENCE_SIZE))
+            )
+            self.confidence = float(os.getenv("YOLO_CONFIDENCE", "0.25"))
+            self.iou = float(os.getenv("YOLO_IOU", "0.50"))
+            self._model = YOLO(str(path), task="segment")
+        except Exception as exc:
+            raise ModelUnavailableError(f"Could not load YOLOv8s weights '{path}': {exc}") from exc
+
+        raw_names = (
+            self._model.names.values()
+            if isinstance(self._model.names, dict)
+            else self._model.names
+        )
+        model_labels = {
+            _LABEL_ALIASES.get(str(name).strip().lower().replace("-", "_").replace(" ", "_"), str(name))
+            for name in raw_names
+        }
+        ball_labels = {"cue_ball", "eight_ball", "object_ball", "solid_ball", "striped_ball"}
+        if "table" not in model_labels or not model_labels.intersection(ball_labels):
+            raise ModelUnavailableError(
+                "The checkpoint is not a Rail-Kick model: it must define 'table' and ball classes."
+            )
+        self._lock = threading.Lock()
+
+    def predict(self, image_bgr: np.ndarray) -> List[YoloDetection]:
+        try:
+            with self._lock:
+                results = self._model.predict(
+                    source=image_bgr,
+                    imgsz=self.inference_size,
+                    conf=self.confidence,
+                    iou=self.iou,
+                    device=self.device,
+                    verbose=False,
+                )
+        except Exception as exc:
+            raise ModelUnavailableError(
+                f"YOLOv8s inference failed on device '{self.device}': {exc}"
+            ) from exc
+
+        if not results:
+            return []
+        result = results[0]
+        if result.boxes is None:
+            return []
+
+        names = result.names
+        boxes = result.boxes.xyxy.detach().cpu().numpy()
+        classes = result.boxes.cls.detach().cpu().numpy().astype(int)
+        confidences = result.boxes.conf.detach().cpu().numpy()
+        polygons = result.masks.xy if result.masks is not None else []
+
+        detections: List[YoloDetection] = []
+        for index, (box, class_id, confidence) in enumerate(zip(boxes, classes, confidences)):
+            raw_name = names[class_id] if isinstance(names, dict) else names[class_id]
+            normalized_name = str(raw_name).strip().lower().replace("-", "_").replace(" ", "_")
+            label = _LABEL_ALIASES.get(normalized_name, normalized_name)
+            polygon = None
+            if index < len(polygons) and len(polygons[index]) >= 3:
+                polygon = np.asarray(polygons[index], dtype=np.float32)
+            detections.append(
+                YoloDetection(
+                    label=label,
+                    confidence=float(confidence),
+                    xyxy=tuple(float(value) for value in box),
+                    polygon=polygon,
+                )
+            )
+        return detections
+
+
+_detector: Optional[YoloV8SmallDetector] = None
+_detector_lock = threading.Lock()
+
+
+def get_detector() -> YoloV8SmallDetector:
+    """Return the process-wide detector, initializing it exactly once."""
+    global _detector
+    if _detector is None:
+        with _detector_lock:
+            if _detector is None:
+                _detector = YoloV8SmallDetector()
+    return _detector
+
+
+def model_status() -> dict:
+    path = Path(os.getenv("YOLO_MODEL_PATH", str(DEFAULT_MODEL_PATH))).expanduser()
+    return {
+        "model": "yolov8s-seg",
+        "weights": str(path),
+        "weights_available": path.is_file(),
+        "loaded": _detector is not None,
+        "device": _detector.device if _detector is not None else None,
+    }
+
 
 # ---------------------------------------------------------------------------
-# Step 1 – Table Boundary & Side Pocket Detection
+# Retired HSV compatibility helpers (not used by analyse_image)
 # ---------------------------------------------------------------------------
 
 def _detect_felt_contour(image_bgr: np.ndarray, felt_color: str = "auto") -> Optional[np.ndarray]:
@@ -318,8 +516,10 @@ def detect_balls_on_warped(
 
     hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     mask_felt = (
-        cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |
-        cv2.inRange(hsv, np.array([85, 30, 30]), np.array([135, 255, 255]))
+        cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255])) |   # green
+        cv2.inRange(hsv, np.array([85, 30, 30]), np.array([135, 255, 255])) |  # blue
+        cv2.inRange(hsv, np.array([0, 40, 30]), np.array([10, 255, 255])) |    # red1
+        cv2.inRange(hsv, np.array([160, 40, 30]), np.array([180, 255, 255]))   # red2
     )
     non_felt = ~mask_felt
 
@@ -328,6 +528,16 @@ def detect_balls_on_warped(
     non_felt[-margin_px:, :] = 0
     non_felt[:, :margin_px] = 0
     non_felt[:, -margin_px:] = 0
+
+    # Pocket exclusion zones — mask out circular regions around all 6 pocket locations
+    # so dark pocket holes are never considered as ball candidates
+    pockets = build_pocket_list(dims)
+    for pocket in pockets:
+        pocket_cx = int(pocket.x * px_mm)
+        pocket_cy = int(h_px - pocket.y * px_mm)
+        # Use 2× pocket radius for generous exclusion to account for perspective warp artifacts
+        pocket_excl_r = int(pocket.radius_mm * px_mm * 2.0)
+        cv2.circle(non_felt, (pocket_cx, pocket_cy), pocket_excl_r, 0, -1)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     non_felt = cv2.morphologyEx(non_felt, cv2.MORPH_OPEN, kernel)
@@ -338,6 +548,17 @@ def detect_balls_on_warped(
     for c in contours:
         area = cv2.contourArea(c)
         if 0.15 * expected_area <= area <= 3.0 * expected_area:
+            # Circularity check: reject highly irregular contours (rail edges, artifacts)
+            # Perfect circle = 1.0; threshold 0.30 is lenient since pocket exclusion
+            # zones are the primary defense against pocket mis-detection
+            perimeter = cv2.arcLength(c, True)
+            if perimeter > 0:
+                circularity = (4.0 * math.pi * area) / (perimeter * perimeter)
+            else:
+                circularity = 0.0
+            if circularity < 0.30:
+                continue
+
             (cx_px, cy_px), r_px = cv2.minEnclosingCircle(c)
             cx_px, cy_px, r_px = int(cx_px), int(cy_px), int(r_px)
             x_mm = cx_px / px_mm
@@ -429,7 +650,15 @@ def classify_ball(
         return "cue"
 
     if mean_v < 70 and white_ratio < 0.15:
-        return "eight"
+        # Distinguish real eight balls from dark pocket holes:
+        # Real balls have a specular (glossy) highlight from ambient lighting;
+        # pocket holes are uniformly dark with no bright spots.
+        bright_spot_mask = (v > 180)
+        gloss_ratio = float(np.sum(bright_spot_mask)) / bright_spot_mask.size
+        if gloss_ratio > 0.01:
+            return "eight"
+        # No glossy highlight detected — likely a pocket hole, not a ball
+        return "unknown"
 
     white_mask = (v > 140) & (s < 80)
     non_white_hsv = hsv[~white_mask] if np.sum(~white_mask) > 0 else hsv
@@ -444,7 +673,7 @@ def classify_ball(
 # Step 4 – Full detection pipeline + Teach Mode support
 # ---------------------------------------------------------------------------
 
-def analyse_image(
+def _analyse_image_legacy(
     image_bgr: np.ndarray,
     manual_cue_x: Optional[float] = None,
     manual_cue_y: Optional[float] = None,
@@ -474,6 +703,10 @@ def analyse_image(
         r_px  = int(r_mm * px_mm)
 
         label = classify_ball(warped, cx_px, cy_px, r_px)
+
+        # Skip unclassifiable objects (e.g. pocket holes that slipped through)
+        if label == "unknown":
+            continue
 
         x1 = max(0, cx_px - r_px)
         y1 = max(0, cy_px - r_px)
@@ -545,6 +778,247 @@ def analyse_image(
         "diamonds": diamonds,
         "balls": balls,
         "cue_detected": cue_detected,
+        "warped": warped,
+        "is_portrait": is_portrait,
+    }
+
+
+# ---------------------------------------------------------------------------
+# YOLOv8s production pipeline
+# ---------------------------------------------------------------------------
+
+def _polygon_to_quad(polygon: np.ndarray) -> Optional[np.ndarray]:
+    """Reduce a table segmentation polygon to perspective corners [TL, TR, BR, BL]."""
+    if polygon is None or len(polygon) < 4:
+        return None
+    contour = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    hull = cv2.convexHull(contour)
+    perimeter = cv2.arcLength(hull, True)
+    for epsilon in np.linspace(0.005, 0.08, 16):
+        approximation = cv2.approxPolyDP(hull, float(epsilon) * perimeter, True)
+        if len(approximation) == 4:
+            return _order_corners(approximation)
+
+    # A mask with rounded pocket cut-outs may never simplify to four points.
+    points = hull.reshape(-1, 2)
+    sums = points.sum(axis=1)
+    differences = np.diff(points, axis=1).ravel()
+    quad = np.array(
+        [
+            points[np.argmin(sums)],
+            points[np.argmin(differences)],
+            points[np.argmax(sums)],
+            points[np.argmax(differences)],
+        ],
+        dtype=np.float32,
+    )
+    if len(np.unique(quad, axis=0)) != 4:
+        return None
+    return quad
+
+
+def _yolo_table_warp(
+    image_bgr: np.ndarray,
+    detections: List[YoloDetection],
+    table_size: str = DEFAULT_TABLE,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
+    table_detections = [d for d in detections if d.label == "table" and d.polygon is not None]
+    if not table_detections:
+        return None, None, None, image_bgr.shape[0] > image_bgr.shape[1]
+
+    def table_score(detection: YoloDetection) -> float:
+        area = abs(cv2.contourArea(detection.polygon.reshape(-1, 1, 2)))
+        return area * detection.confidence
+
+    table = max(table_detections, key=table_score)
+    corners = _polygon_to_quad(table.polygon)
+    if corners is None:
+        return None, None, None, image_bgr.shape[0] > image_bgr.shape[1]
+
+    top = np.linalg.norm(corners[1] - corners[0])
+    bottom = np.linalg.norm(corners[2] - corners[3])
+    left = np.linalg.norm(corners[3] - corners[0])
+    right = np.linalg.norm(corners[2] - corners[1])
+    is_portrait = bool((left + right) > (top + bottom))
+
+    # Rotate corner correspondence clockwise when the long rails are vertical.
+    source = corners[[3, 0, 1, 2]] if is_portrait else corners
+    config = TABLE_CONFIGS.get(table_size, TABLE_CONFIGS[DEFAULT_TABLE])
+    dims = TableDims(width=config["width_mm"], height=config["height_mm"])
+    width_px = int(os.getenv("CV_WARP_WIDTH", str(DEFAULT_WARP_WIDTH_PX)))
+    height_px = max(1, round(width_px * dims.height / dims.width))
+    destination = np.array(
+        [[0, 0], [width_px - 1, 0], [width_px - 1, height_px - 1], [0, height_px - 1]],
+        dtype=np.float32,
+    )
+    homography = cv2.getPerspectiveTransform(source.astype(np.float32), destination)
+    warped = cv2.warpPerspective(image_bgr, homography, (width_px, height_px))
+    return warped, homography, dims, is_portrait
+
+
+def _detection_center(detection: YoloDetection) -> Tuple[float, float]:
+    if detection.polygon is not None and len(detection.polygon) >= 3:
+        moments = cv2.moments(detection.polygon.astype(np.float32))
+        if moments["m00"]:
+            return moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
+    x1, y1, x2, y2 = detection.xyxy
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _classify_yolo_ball(warped: np.ndarray, detection: YoloDetection) -> Tuple[str, float]:
+    x1, y1, x2, y2 = detection.xyxy
+    cx, cy = _detection_center(detection)
+    radius = max(2, round(max(x2 - x1, y2 - y1) / 2.0))
+    visual_label = classify_ball(warped, round(cx), round(cy), radius)
+
+    if detection.label == "cue_ball":
+        label = "cue"
+    elif detection.label == "eight_ball":
+        label = "eight"
+    elif detection.label == "solid_ball":
+        label = visual_label if visual_label.startswith("solid-") else "solid-red"
+    elif detection.label == "striped_ball":
+        label = visual_label if visual_label.startswith("stripe-") else "stripe-red"
+    else:
+        label = visual_label
+
+    roi = warped[
+        max(0, round(y1)):min(warped.shape[0], round(y2)),
+        max(0, round(x1)):min(warped.shape[1], round(x2)),
+    ]
+    return label, get_ball_white_ratio(roi)
+
+
+def _yolo_balls(
+    warped: np.ndarray,
+    dims: TableDims,
+    detections: List[YoloDetection],
+) -> List[dict]:
+    accepted = {"cue_ball", "eight_ball", "object_ball", "solid_ball", "striped_ball"}
+    width_denominator = max(1, warped.shape[1] - 1)
+    height_denominator = max(1, warped.shape[0] - 1)
+    candidates: List[dict] = []
+
+    for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+        if detection.label not in accepted:
+            continue
+        cx, cy = _detection_center(detection)
+        x_mm = cx / width_denominator * dims.width
+        y_mm = dims.height - (cy / height_denominator * dims.height)
+        if not (
+            BALL_RADIUS_MM <= x_mm <= dims.width - BALL_RADIUS_MM
+            and BALL_RADIUS_MM <= y_mm <= dims.height - BALL_RADIUS_MM
+        ):
+            continue
+        if any(
+            math.hypot(x_mm - existing["x_mm"], y_mm - existing["y_mm"])
+            < BALL_RADIUS_MM * 1.5
+            for existing in candidates
+        ):
+            continue
+
+        label, white_ratio = _classify_yolo_ball(warped, detection)
+        if label == "unknown":
+            continue
+        candidates.append(
+            {
+                "x_mm": round(x_mm, 1),
+                "y_mm": round(y_mm, 1),
+                "r_mm": BALL_RADIUS_MM,
+                "label": label,
+                "white_ratio": white_ratio,
+                "confidence": detection.confidence,
+            }
+        )
+    return candidates
+
+
+def analyse_image(
+    image_bgr: np.ndarray,
+    manual_cue_x: Optional[float] = None,
+    manual_cue_y: Optional[float] = None,
+    manual_cue_ball_id: Optional[str] = None,
+    felt_color: str = "auto",
+    detector: Optional[Detector] = None,
+) -> Optional[dict]:
+    """Analyze a camera image with custom YOLOv8s segmentation predictions.
+
+    ``felt_color`` remains accepted for API compatibility but learned table
+    segmentation intentionally replaces color-threshold table selection.
+    """
+    del felt_color
+    active_detector = detector or get_detector()
+    table_predictions = active_detector.predict(image_bgr)
+    warped, _, dims, is_portrait = _yolo_table_warp(image_bgr, table_predictions)
+    if warped is None or dims is None:
+        return None
+
+    ball_predictions = active_detector.predict(warped)
+    candidate_balls = _yolo_balls(warped, dims, ball_predictions)
+
+    if manual_cue_ball_id is not None:
+        for index, ball in enumerate(candidate_balls):
+            if manual_cue_ball_id in {f"obj{index + 1}", "cue"}:
+                ball["label"] = "cue"
+                break
+    elif manual_cue_x is not None and manual_cue_y is not None:
+        candidate_balls = [ball for ball in candidate_balls if ball["label"] != "cue"]
+        if (
+            BALL_RADIUS_MM <= manual_cue_x <= dims.width - BALL_RADIUS_MM
+            and BALL_RADIUS_MM <= manual_cue_y <= dims.height - BALL_RADIUS_MM
+        ):
+            candidate_balls.append(
+                {
+                    "x_mm": round(manual_cue_x, 1),
+                    "y_mm": round(manual_cue_y, 1),
+                    "r_mm": BALL_RADIUS_MM,
+                    "label": "cue",
+                    "white_ratio": 1.0,
+                    "confidence": 1.0,
+                }
+            )
+
+    cue_indices = [i for i, ball in enumerate(candidate_balls) if ball["label"] == "cue"]
+    if not cue_indices:
+        white_candidates = [i for i, ball in enumerate(candidate_balls) if ball["white_ratio"] > 0.30]
+        if white_candidates:
+            best = max(
+                white_candidates,
+                key=lambda i: (candidate_balls[i]["white_ratio"], candidate_balls[i]["confidence"]),
+            )
+            candidate_balls[best]["label"] = "cue"
+            cue_indices = [best]
+    elif len(cue_indices) > 1:
+        best = max(cue_indices, key=lambda i: candidate_balls[i]["confidence"])
+        for index in cue_indices:
+            if index != best:
+                candidate_balls[index]["label"] = "stripe-red"
+        cue_indices = [best]
+
+    balls: List[Ball] = []
+    object_counter = 0
+    for candidate in candidate_balls:
+        if candidate["label"] == "cue":
+            ball_id = "cue"
+        else:
+            object_counter += 1
+            ball_id = f"obj{object_counter}"
+        balls.append(
+            Ball(
+                id=ball_id,
+                label=candidate["label"],
+                x=candidate["x_mm"],
+                y=candidate["y_mm"],
+                radius_mm=candidate["r_mm"],
+            )
+        )
+
+    return {
+        "dims": dims,
+        "pockets": build_pocket_list(dims),
+        "diamonds": build_diamond_list(dims),
+        "balls": balls,
+        "cue_detected": bool(cue_indices),
         "warped": warped,
         "is_portrait": is_portrait,
     }

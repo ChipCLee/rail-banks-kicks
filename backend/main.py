@@ -8,24 +8,40 @@ Provides REST endpoint:
 """
 from __future__ import annotations
 
-import io
+import os
+from contextlib import asynccontextmanager
+from functools import partial
 from typing import Optional
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-import cv2
-import numpy as np
-from PIL import Image
+from starlette.concurrency import run_in_threadpool
 
 from models import AnalysisResult
-from cv_module import analyse_image
+from cv_module import ModelUnavailableError, analyse_image, get_detector, model_status
+from image_input import InvalidImageError, decode_camera_image
 from geometry import find_direct_shots, find_bank_shots
 from v2_kick_shots import find_kick_shots
 from annotate import annotate_table, render_2d_cv_diagram
 
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    application.state.cv_detector = None
+    application.state.cv_model_error = None
+    if os.getenv("CV_LOAD_MODEL_ON_STARTUP", "1") == "1":
+        try:
+            application.state.cv_detector = await run_in_threadpool(get_detector)
+        except ModelUnavailableError as exc:
+            # Keep health and API diagnostics available when weights are not mounted.
+            application.state.cv_model_error = str(exc)
+    yield
+
+
 app = FastAPI(
     title="Rail-Kick API",
     description="Pool table shot detection backend API with 2D CV Diagram & Teach Mode",
-    version="0.6.0",
+    version="0.7.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -36,13 +52,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_CONTENT_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+}
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 @app.get("/health")
 def healthcheck():
-    return {"status": "ok", "version": "0.6.0"}
+    details = model_status()
+    model_error = getattr(app.state, "cv_model_error", None)
+    if model_error:
+        details["error"] = model_error
+    return {
+        "status": "ok" if details["weights_available"] and not model_error else "degraded",
+        "version": "0.7.0",
+        "cv": details,
+    }
 
 
 @app.post("/analyze", response_model=AnalysisResult)
@@ -56,7 +86,7 @@ async def analyze_table_image(
     if image.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Unsupported image format '{image.content_type}'. Allowed: JPG, PNG, WEBP.",
+            detail=f"Unsupported image format '{image.content_type}'. Allowed: JPG, PNG, WEBP, HEIC.",
         )
 
     content = await image.read()
@@ -67,21 +97,35 @@ async def analyze_table_image(
         )
 
     try:
-        pil_img = Image.open(io.BytesIO(content)).convert("RGB")
-        img_np = np.array(pil_img)[:, :, ::-1]  # RGB to BGR
-    except Exception as err:
+        img_np = decode_camera_image(content)
+    except InvalidImageError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid image file: {str(err)}",
+            detail=str(err),
         )
 
-    cv_res = analyse_image(
-        img_np,
-        manual_cue_x=manual_cue_x,
-        manual_cue_y=manual_cue_y,
-        manual_cue_ball_id=manual_cue_ball_id,
-        felt_color=felt_color or "auto",
-    )
+    detector = getattr(app.state, "cv_detector", None)
+    model_error = getattr(app.state, "cv_model_error", None)
+    if detector is None and model_error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=model_error)
+
+    try:
+        cv_res = await run_in_threadpool(
+            partial(
+                analyse_image,
+                img_np,
+                manual_cue_x=manual_cue_x,
+                manual_cue_y=manual_cue_y,
+                manual_cue_ball_id=manual_cue_ball_id,
+                felt_color=felt_color or "auto",
+                detector=detector,
+            )
+        )
+    except ModelUnavailableError as err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(err),
+        ) from err
 
     if cv_res is None:
         raise HTTPException(

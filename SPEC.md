@@ -62,8 +62,8 @@
            ▼                                           ▼
 ┌──────────────────────────┐             ┌─────────────────────────┐
 │  Computer Vision Module  │             │  Geometry/Physics Module │
-│  • Table boundary detect │             │  • Ghost-ball direct-hit │
-│  • Ball detection        │             │    path check            │
+│  • YOLOv8s table segment │             │  • Ghost-ball direct-hit │
+│  • YOLOv8s ball detect   │             │    path check            │
 │  • Ball classification   │             │  • Object ball → rail    │
 │    (color/type only,     │             │    reflection calc       │
 │     no number OCR)       │             │  • Pocket intersection   │
@@ -81,10 +81,12 @@
 |---|---|
 | Frontend | React (Vite) + Vanilla CSS |
 | Backend API | Python (FastAPI) or Node.js (Express) |
-| CV processing | OpenCV.js (client-side) **or** Python OpenCV (server-side) |
+| Python environment | `uv` with committed `pyproject.toml`, `uv.lock`, and Python 3.11 pin |
+| CV processing | Custom Ultralytics YOLOv8s segmentation + Python OpenCV |
+| Acceleration | NVIDIA CUDA, Apple MPS, CPU fallback |
 | Deployment | Single-page app + lightweight REST API; deployable via Docker |
 
-> **Preferred approach**: Run OpenCV on the **backend** (Python + FastAPI) to avoid the 8 MB OpenCV.js bundle. The frontend is a pure React SPA that uploads a photo and renders the response.
+> The backend runs custom YOLOv8-small segmentation and OpenCV. The model is loaded once at application startup. `CV_DEVICE=auto` selects CUDA first, then Apple MPS, then CPU. Apple GPU inference runs natively on macOS; NVIDIA GPU inference may run in the CUDA container.
 
 ### User Flow
 
@@ -93,7 +95,7 @@
 2. User uploads a photo of the pool table by holding phone overhead
    (drag-and-drop area or "Choose File" button).
 3. App sends the photo to POST /analyze.
-4. Backend (Python + FastAPI + OpenCV) processes and returns AnalysisResult JSON.
+4. Backend normalizes camera orientation, runs YOLOv8s segmentation, applies OpenCV metric mapping, and returns AnalysisResult JSON.
 5. App renders the annotated image full-width at the top.
 6. App shows a scrollable shot list below, in two groups:
    - "Direct Shots" → "[color/type] ball directly into [pocket]" (ranked easiest first)
@@ -105,7 +107,7 @@
 
 | Screen | Description |
 |---|---|
-| **Upload Screen** | Full-page drop zone with instructions. Accepts JPG/PNG/WEBP ≤ 20 MB. |
+| **Upload Screen** | Full-page drop zone with instructions. Accepts JPG/PNG/WEBP/HEIC/HEIF ≤ 20 MB. |
 | **Processing Screen** | Spinner / progress indicator while backend analyzes. |
 | **Result Screen** | **Mobile-first layout**: annotated image full-width at top; shot list scrolls below. Two labelled groups: "Direct Shots" (ranked by ease) then "Bank Shots" (ranked by ease). Tapping a shot highlights its path on the image. |
 | **Error Screen** | Friendly message: `"No valid shots found — every possible bank is blocked or misses all pockets."` Also shown if no table or cue ball is detected in the photo. |
@@ -120,22 +122,18 @@ The user uploads a single photo through the web UI.
 
 | Field | Type | Description |
 |---|---|---|
-| `image` | `multipart/form-data file` | A JPG, PNG, or WEBP photograph of the pool table. Taken by **holding a phone overhead** (moderate angle, common case). Maximum file size: 20 MB. |
-| `felt_color` | `string (form field)` | Optional felt color selection (`"blue"`, `"green"`, `"red"`, `"auto"`). Defaults to `"auto"`. |
+| `image` | `multipart/form-data file` | A JPG, PNG, WEBP, HEIC, or HEIF photograph of the pool table, including iPhone 16 camera output. Maximum file size: 20 MB and decoded size: 80 megapixels. |
+| `felt_color` | `string (deprecated form field)` | Accepted for backward compatibility and ignored by learned table segmentation. |
 
-> **No camera metadata is required.** The perspective correction is computed automatically from the detected table boundary using **felt color HSV masking** (user-selected or automatic green/blue/red) and 4-corner homography transform.
+> Camera calibration metadata is not required. EXIF orientation is applied before inference. Images longer than 6000 pixels are proportionally reduced, then perspective correction is computed from the learned table mask and a four-corner homography.
 
 ### 1.2 Processing Steps
 
 #### Step 1 – Table Boundary Detection
 
-1. Detect the pool table felt region using **HSV color masking** based on the user's selected `felt_color`:
-   - `"blue"`: Targeted Simonis 860 Tournament Blue felt HSV range (`H: [85..135]`).
-   - `"green"`: Targeted Traditional Green felt HSV range (`H: [30..90]`).
-   - `"red"`: Targeted Red / Burgundy felt HSV range (`H: [0..10] ∪ [160..180]`).
-   - `"auto"`: Combines all green, blue, and red HSV ranges.
-2. Find the **four corner pockets** as the corners of the felt region.
-3. Apply a **perspective homography transform** to produce a canonical top-down view of the table with known real-world dimensions (9-foot table: 254 cm × 127 cm playfield, or 8-foot: 224 cm × 112 cm).
+1. Run the custom `yolov8s-seg` checkpoint on the normalized camera image and select the highest-confidence `table` mask by confidence-weighted mask area.
+2. Reduce the table mask's convex hull to four ordered corners. Determine whether the long rails are vertical or horizontal and normalize portrait tables clockwise.
+3. Apply a perspective homography transform to a 2560 × 1280 top-down view with known real-world dimensions (9-foot table: 254 cm × 127 cm playfield, or 8-foot: 224 cm × 112 cm).
 
 4. Mark all **six pocket centres** in table coordinates:
    - Four corners (TL, TR, BL, BR)
@@ -143,15 +141,13 @@ The user uploads a single photo through the web UI.
 
 #### Step 2 – Ball Detection
 
-1. Apply **Gaussian blur** to reduce noise.
-2. Use **Hough Circle Transform** (`cv2.HoughCircles`) to find circular regions.
-3. Filter circles by:
-   - Radius range matching a standard pool ball diameter (57.15 mm ≈ `r_pixels` derived from table scale).
-   - Overlap removal (non-maximum suppression on confidence).
+1. Run the same custom `yolov8s-seg` checkpoint on the rectified playfield so small balls occupy more inference pixels.
+2. Accept the mutually exclusive model classes `cue_ball`, `eight_ball`, and `object_ball`; `table` is ignored in this pass.
+3. Use mask centroids when available and bounding-box centres otherwise. Suppress duplicate centres and reject detections outside a one-ball-radius inset of the playfield.
 
 #### Step 3 – Ball Classification
 
-Classify each detected ball by colour profile of the circular ROI. **Ball number recognition (OCR) is explicitly out of scope.**
+Use learned cue/eight labels directly. Classify each generic `object_ball` by the colour profile of its detected ROI. **Ball number recognition (OCR) is explicitly out of scope.**
 
 | Ball Type | Colour Signature | Label Used in Output |
 |---|---|---|
@@ -168,7 +164,17 @@ Return the result as a **BallMap**: a list of `Ball` objects (see [Data Models](
 
 Each ball's pixel centre is transformed via the homography matrix into **table coordinates** `(x, y)` expressed in millimetres from the bottom-left corner of the playfield.
 
-### 1.3 Output
+### 1.3 Model Validation Gates
+
+Before a custom checkpoint is promoted to `weights/rail_kick_yolov8s_seg.pt`, it must meet these held-out, session-separated iPhone validation targets:
+
+- Table localization success ≥ 98%.
+- Ball recall ≥ 95% and precision ≥ 98%.
+- Median ball-centre error ≤ 15 mm after homography.
+- No emitted ball centre outside the one-ball-radius playfield inset.
+- Real-device smoke tests pass on Apple MPS and NVIDIA CUDA; CPU remains available for CI and diagnostics.
+
+### 1.4 Output
 
 ```json
 {
@@ -414,7 +420,7 @@ interface AnalysisResult {
 |---|---|
 | C1 | Table must be a standard 7-foot, 8-foot, or 9-foot pool table. Snooker tables are out of scope for v1. |
 | C2 | The photograph must capture the **entire** table surface. Partial views are not supported. |
-| C3 | Accepted image formats: **JPG, PNG, WEBP**. Maximum file size: **20 MB**. |
+| C3 | Accepted image formats: **JPG, PNG, WEBP, HEIC, HEIF**. Maximum file size: **20 MB** and decoded size: **80 megapixels**. |
 | C4 | Lighting must be reasonably uniform. Extreme shadows that mask balls are not handled. |
 | C5 | v1 detects **two shot types**: (a) direct shots — cue ball hits object ball straight to a pocket; (b) one-bank shots — object ball hits exactly one rail before pocketing. The cue ball must reach the object ball directly in both cases. |
 | C6 | Multi-rail banks (2+ rails) are out of scope for v1. |
@@ -425,6 +431,8 @@ interface AnalysisResult {
 | C11 | A minimum of 2 balls (cue ball + at least one object ball) must be present on the table. |
 | C12 | Balls must not be completely overlapping in the image. |
 | C13 | The application runs in a **web browser**. No native app installation is required. |
+| C14 | Runtime requires a custom YOLOv8s segmentation checkpoint with `table`, `cue_ball`, `eight_ball`, and `object_ball` classes. Stock COCO weights are unsupported. |
+| C15 | Automated tests inject deterministic model predictions; release validation must additionally run the real checkpoint on held-out iPhone camera images. |
 
 ---
 
@@ -617,7 +625,7 @@ The `Shot` record gains a `throw_correction_deg` field:
 | Q3 | ✅ Resolved | Snooker table support: **No**, not planned. Pool tables only (7 / 8 / 9 ft). | — |
 | Q4 | ✅ Resolved | **Number recognition is not required.** Color/type label is sufficient. | — |
 | Q5 | ✅ Resolved | **Yes — shots are ranked by ease**, easiest first. See ranking definition in §2.3. | — |
-| Q6 | ✅ Resolved | Target platform is **web browser** (React SPA + Python backend). Stack selected: Vite + FastAPI + OpenCV. | — |
+| Q6 | ✅ Resolved | Target platform is **web browser** (React SPA + Python backend). Stack selected: Vite + FastAPI + custom YOLOv8s + OpenCV. | — |
 | Q7 | ✅ Resolved | **v1 shot scope**: One-bank shots only (object ball off one rail into pocket). Kick shots deferred to v2. | — |
 
 ---
@@ -632,3 +640,4 @@ The `Shot` record gains a `throw_correction_deg` field:
 | 0.4 | 2026-07-31 | — | Resolved Q1 (throw in v2), Q3 (no snooker), Q5 (rank shots by ease). Added shot ranking definition to §2.3. All questions resolved. |
 | 0.5 | 2026-07-31 | — | Added v2 scope: Feature 3 (one-rail kick shots + diamond system, 2.5-diamond worked example), Feature 4 (cushion throw modelling with empirical correction). TOC updated. |
 | 0.6 | 2026-07-31 | — | /grill-me interview: added direct shots to v1 scope, mobile-first result layout, auto table detection confirmed, two-group results panel, DirectShot + BankShot data models, all 6 pockets valid, ghost-ball obstruction confirmed. |
+| 0.7 | 2026-08-02 | — | Replaced HSV/circle detection with custom YOLOv8s segmentation, added CUDA/MPS device selection, iPhone EXIF and HEIC handling, bounded camera decoding, model training/deployment contracts, and model-injected unit/E2E tests. |

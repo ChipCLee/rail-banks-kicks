@@ -10,7 +10,6 @@ import { Target } from 'lucide-react';
 export default function App() {
   const [step, setStep] = useState('upload'); // 'upload' | 'processing' | 'teach' | 'result' | 'error'
   const [currentFile, setCurrentFile] = useState(null);
-  const [feltColor, setFeltColor] = useState('auto');
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -18,13 +17,8 @@ export default function App() {
     setStep('processing');
     setErrorMsg(null);
 
-    const mergedOptions = {
-      felt_color: feltColor,
-      ...options,
-    };
-
     try {
-      const data = await analyzeTableImage(file, mergedOptions);
+      const data = await analyzeTableImage(file, options);
       setResult(data);
 
       if (data.cue_detected === false) {
@@ -39,15 +33,14 @@ export default function App() {
     }
   };
 
-  const handleFileSelected = (file, selectedFeltColor = 'auto') => {
+  const handleFileSelected = (file) => {
     setCurrentFile(file);
-    setFeltColor(selectedFeltColor);
-    processImage(file, { felt_color: selectedFeltColor });
+    processImage(file);
   };
 
   const handleSetCueBallLocation = (options) => {
     if (currentFile) {
-      processImage(currentFile, { felt_color: feltColor, ...options });
+      processImage(currentFile, options);
     }
   };
 
@@ -65,7 +58,7 @@ export default function App() {
           <Target size={24} />
           <span>Rail-Kick</span>
         </div>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>v0.6.0</span>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>v0.7.0</span>
       </header>
 
       <main className="container">
@@ -73,7 +66,6 @@ export default function App() {
           <UploadScreen 
             onFileSelected={handleFileSelected} 
             error={errorMsg} 
-            defaultFeltColor={feltColor}
           />
         )}
         {step === 'processing' && <ProcessingScreen />}
