@@ -6,9 +6,9 @@ Implements explicit CV rules:
   2. Short rails have 2 pockets (Corner, Corner) and 3 diamonds.
   3. No ball is outside the table boundary.
   4. Once the table is identified, focus ONLY on the table and ignore all background.
-  5. Automatically detects portrait table orientation and rotates the image 90° clockwise
-     so that Long Rails are ALWAYS at the Top & Bottom and Short Rails are at the Left & Right,
-     ensuring the camera photo and 2D diagram share the exact same horizontal landscape orientation.
+  5. Uses Side Pocket detection along rail midpoints to identify Long Rails (3 pockets)
+     vs Short Rails (2 pockets), rotating portrait images 90° clockwise so Long Rails
+     are ALWAYS at the Top & Bottom and Short Rails are at the Left & Right.
 
 All measurements are in mm in table space.
 SPEC.md §Feature 1 – Ball Position Analysis.
@@ -41,7 +41,7 @@ SIDE_POCKET_RADIUS_MM = 63.0
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – Table Boundary Detection
+# Step 1 – Table Boundary & Side Pocket Detection
 # ---------------------------------------------------------------------------
 
 def _detect_felt_contour(image_bgr: np.ndarray, felt_color: str = "auto") -> Optional[np.ndarray]:
@@ -113,14 +113,65 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
     return rect
 
 
+def _detect_long_rails_by_side_pockets(image_bgr: np.ndarray, rect: np.ndarray) -> bool:
+    """
+    Detect whether vertical rails (Left & Right) or horizontal rails (Top & Bottom)
+    are the LONG RAILS by detecting the presence of middle side pockets.
+      - Long rails have 3 pockets (Corner, Middle Side, Corner).
+      - Short rails have 2 pockets (Corner, Corner).
+    Returns True if vertical rails are long rails (portrait layout), False if horizontal rails are long rails.
+    """
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    v_chan = hsv[:, :, 2]
+
+    edges = [
+        ("Top", rect[0], rect[1]),
+        ("Right", rect[1], rect[2]),
+        ("Bottom", rect[3], rect[2]),
+        ("Left", rect[0], rect[3]),
+    ]
+
+    dark_scores = {}
+    for name, p1, p2 in edges:
+        mid_x = int((p1[0] + p2[0]) / 2.0)
+        mid_y = int((p1[1] + p2[1]) / 2.0)
+
+        r = int(min(image_bgr.shape[:2]) * 0.04)
+        r = max(15, min(50, r))
+
+        x1, x2 = max(0, mid_x - r), min(image_bgr.shape[1], mid_x + r)
+        y1, y2 = max(0, mid_y - r), min(image_bgr.shape[0], mid_y + r)
+
+        roi_v = v_chan[y1:y2, x1:x2]
+        if roi_v.size == 0:
+            dark_scores[name] = 0.0
+        else:
+            dark_ratio = float(np.sum(roi_v < 75)) / roi_v.size
+            dark_scores[name] = dark_ratio
+
+    vert_score = dark_scores["Left"] + dark_scores["Right"]
+    horiz_score = dark_scores["Top"] + dark_scores["Bottom"]
+
+    # Fallback to edge length ratio if pocket dark score is ambiguous / tied
+    if abs(vert_score - horiz_score) < 0.10:
+        top_len = np.linalg.norm(rect[1] - rect[0])
+        right_len = np.linalg.norm(rect[2] - rect[1])
+        bottom_len = np.linalg.norm(rect[2] - rect[3])
+        left_len = np.linalg.norm(rect[3] - rect[0])
+        return ((left_len + right_len) / 2.0) > ((top_len + bottom_len) / 2.0)
+
+    return vert_score > horiz_score
+
+
 def detect_table_and_warp(
     image_bgr: np.ndarray,
     table_size: str = DEFAULT_TABLE,
     felt_color: str = "auto",
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
     """
-    Detect table boundary, rotate portrait input images to standardized landscape orientation
-    (Long Rails at Top & Bottom, Short Rails at Left & Right), and return perspective warped image.
+    Detect table boundary, use Middle Side Pocket detection (3 pockets on long rails,
+    2 pockets on short rails) to rotate portrait input images 90° clockwise so that
+    Long Rails are ALWAYS at Top & Bottom and Short Rails are at Left & Right.
     """
     contour = _detect_felt_contour(image_bgr, felt_color=felt_color)
     if contour is None:
@@ -128,19 +179,10 @@ def detect_table_and_warp(
         return None, None, None, img_h > img_w
 
     src_pts = _order_corners(contour)
-
-    # Measure felt contour edges in original image
-    top_len = np.linalg.norm(src_pts[1] - src_pts[0])
-    right_len = np.linalg.norm(src_pts[2] - src_pts[1])
-    bottom_len = np.linalg.norm(src_pts[2] - src_pts[3])
-    left_len = np.linalg.norm(src_pts[3] - src_pts[0])
-
-    horiz_len = (top_len + bottom_len) / 2.0
-    vert_len = (left_len + right_len) / 2.0
-    is_portrait_felt = vert_len > horiz_len
+    is_portrait_felt = _detect_long_rails_by_side_pockets(image_bgr, src_pts)
 
     if is_portrait_felt:
-        # Rotate image 90° clockwise so Long Rails become Top & Bottom
+        # Rotate image 90° clockwise so Long Rails (with middle side pockets) become Top & Bottom
         image_bgr = cv2.rotate(image_bgr, cv2.ROTATE_90_CLOCKWISE)
         contour = _detect_felt_contour(image_bgr, felt_color=felt_color)
         if contour is None:
