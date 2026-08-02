@@ -136,12 +136,34 @@ def detect_table_and_warp(
         return None, None, None, is_portrait
 
     src_pts = _order_corners(contour)
-    dst_pts = np.array([
-        [0,    h_px],  # TL
-        [w_px, h_px],  # TR
-        [w_px, 0   ],  # BR
-        [0,    0   ],  # BL
-    ], dtype=np.float32)
+
+    # Check felt contour edge lengths to determine if table in photo is horizontal (landscape) or vertical (portrait)
+    top_len = np.linalg.norm(src_pts[1] - src_pts[0])
+    right_len = np.linalg.norm(src_pts[2] - src_pts[1])
+    bottom_len = np.linalg.norm(src_pts[2] - src_pts[3])
+    left_len = np.linalg.norm(src_pts[3] - src_pts[0])
+
+    horiz_len = (top_len + bottom_len) / 2.0
+    vert_len = (left_len + right_len) / 2.0
+    is_portrait_felt = vert_len > horiz_len
+
+    if is_portrait_felt:
+        # Photo Top edge is Short Rail (h_mm=1270), Left edge is Long Rail (w_mm=2540)
+        # Map photo corners to canonical table space (x in [0, w_mm], y in [0, h_mm]):
+        dst_pts = np.array([
+            [0,    h_px],  # Photo TL -> Table (x=0, y=h) [TL]
+            [0,    0   ],  # Photo TR -> Table (x=0, y=0) [BL]
+            [w_px, 0   ],  # Photo BR -> Table (x=w, y=0) [BR]
+            [w_px, h_px],  # Photo BL -> Table (x=w, y=h) [TR]
+        ], dtype=np.float32)
+    else:
+        # Photo Top edge is Long Rail (w_mm=2540), Left edge is Short Rail (h_mm=1270)
+        dst_pts = np.array([
+            [0,    h_px],  # Photo TL -> Table (x=0, y=h) [TL]
+            [w_px, h_px],  # Photo TR -> Table (x=w, y=h) [TR]
+            [w_px, 0   ],  # Photo BR -> Table (x=w, y=0) [BR]
+            [0,    0   ],  # Photo BL -> Table (x=0, y=0) [BL]
+        ], dtype=np.float32)
 
     H, _ = cv2.findHomography(src_pts, dst_pts)
     if H is None:
