@@ -51,6 +51,7 @@ async def analyze_table_image(
     manual_cue_x: Optional[float] = Form(None),
     manual_cue_y: Optional[float] = Form(None),
     manual_cue_ball_id: Optional[str] = Form(None),
+    felt_color: Optional[str] = Form("auto"),
 ):
     if image.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
@@ -79,7 +80,9 @@ async def analyze_table_image(
         manual_cue_x=manual_cue_x,
         manual_cue_y=manual_cue_y,
         manual_cue_ball_id=manual_cue_ball_id,
+        felt_color=felt_color or "auto",
     )
+
     if cv_res is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

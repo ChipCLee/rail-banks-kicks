@@ -28,6 +28,10 @@ export async function analyzeTableImage(file, options = {}) {
   if (options.manual_cue_ball_id) {
     formData.append('manual_cue_ball_id', options.manual_cue_ball_id);
   }
+  if (options.felt_color) {
+    formData.append('felt_color', options.felt_color);
+  }
+
 
   const baseUrl = getApiBaseUrl();
   const endpoint = baseUrl ? `${baseUrl}/analyze` : '/analyze';

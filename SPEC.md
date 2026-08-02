@@ -121,16 +121,22 @@ The user uploads a single photo through the web UI.
 | Field | Type | Description |
 |---|---|---|
 | `image` | `multipart/form-data file` | A JPG, PNG, or WEBP photograph of the pool table. Taken by **holding a phone overhead** (moderate angle, common case). Maximum file size: 20 MB. |
+| `felt_color` | `string (form field)` | Optional felt color selection (`"blue"`, `"green"`, `"red"`, `"auto"`). Defaults to `"auto"`. |
 
-> **No camera metadata is required.** The perspective correction is computed automatically from the detected table boundary using **full automatic CV detection** (green felt masking + corner finding). There is no manual calibration step in v1.
+> **No camera metadata is required.** The perspective correction is computed automatically from the detected table boundary using **felt color HSV masking** (user-selected or automatic green/blue/red) and 4-corner homography transform.
 
 ### 1.2 Processing Steps
 
 #### Step 1 – Table Boundary Detection
 
-1. Detect the **green felt region** using HSV color masking.
-2. Find the **four corner pockets** as the corners of the felt region (Hough line method or contour-based).
+1. Detect the pool table felt region using **HSV color masking** based on the user's selected `felt_color`:
+   - `"blue"`: Targeted Simonis 860 Tournament Blue felt HSV range (`H: [85..135]`).
+   - `"green"`: Targeted Traditional Green felt HSV range (`H: [30..90]`).
+   - `"red"`: Targeted Red / Burgundy felt HSV range (`H: [0..10] ∪ [160..180]`).
+   - `"auto"`: Combines all green, blue, and red HSV ranges.
+2. Find the **four corner pockets** as the corners of the felt region.
 3. Apply a **perspective homography transform** to produce a canonical top-down view of the table with known real-world dimensions (9-foot table: 254 cm × 127 cm playfield, or 8-foot: 224 cm × 112 cm).
+
 4. Mark all **six pocket centres** in table coordinates:
    - Four corners (TL, TR, BL, BR)
    - Two side centres (ML, MR)

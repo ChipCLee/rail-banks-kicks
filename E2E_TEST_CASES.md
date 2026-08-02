@@ -109,6 +109,25 @@
 1. Upload a valid image.
 2. Observe the screen immediately after upload.
 
+---
+
+### TC-U-07 · Felt Color Selection & Table Detection Accuracy
+
+**Scenario**: User selects table felt color (Blue, Green, Red, or Auto) before uploading a photo.
+
+**Preconditions**: App is on the Upload Screen. Photos of Simonis Blue, Traditional Green, or Red/Burgundy pool tables are available.
+
+**Steps**:
+1. Open the web app.
+2. Click the "Simonis Blue" felt color pill on the Upload Screen.
+3. Select and upload a Simonis 860 Tournament Blue table photo.
+
+**Expected**:
+- The selected felt color pill (`blue`) is visually highlighted.
+- `POST /analyze` request contains `felt_color=blue` in `multipart/form-data`.
+- Backend uses targeted blue felt HSV masking to detect the table contour accurately.
+
+
 **Expected**:
 - Processing Screen is shown with a visible spinner.
 - Upload button / drop zone is not shown during processing.

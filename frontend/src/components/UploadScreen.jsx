@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, Image as ImageIcon, AlertTriangle } from 'lucide-react';
+import { UploadCloud, AlertTriangle, Palette } from 'lucide-react';
 
-export default function UploadScreen({ onFileSelected, error: externalError }) {
+export default function UploadScreen({ onFileSelected, error: externalError, defaultFeltColor = 'auto' }) {
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState(externalError || null);
+  const [feltColor, setFeltColor] = useState(defaultFeltColor);
   const inputRef = useRef(null);
 
   const validateAndPass = (file) => {
@@ -22,7 +23,7 @@ export default function UploadScreen({ onFileSelected, error: externalError }) {
       return;
     }
     
-    onFileSelected(file);
+    onFileSelected(file, feltColor);
   };
 
   const handleDrag = (e) => {
@@ -44,8 +45,54 @@ export default function UploadScreen({ onFileSelected, error: externalError }) {
     }
   };
 
+  const feltOptions = [
+    { id: 'auto', label: 'Auto Detect', color: '#00DCFF', icon: '✨' },
+    { id: 'blue', label: 'Simonis Blue', color: '#3B82F6', icon: '🟦' },
+    { id: 'green', label: 'Green Felt', color: '#10B981', icon: '🟩' },
+    { id: 'red', label: 'Red / Burgundy', color: '#EF4444', icon: '🟥' },
+  ];
+
   return (
     <div className="upload-container">
+      {/* Felt Color Selection Control */}
+      <div style={{ background: 'var(--bg-card)', padding: '14px 18px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>
+          <Palette size={18} color="var(--accent-cyan)" />
+          <span>Select Table Felt Color (for higher CV accuracy):</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px' }}>
+          {feltOptions.map((opt) => {
+            const isSelected = feltColor === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setFeltColor(opt.id)}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: isSelected ? `2px solid ${opt.color}` : '1px solid var(--border-color)',
+                  background: isSelected ? 'rgba(30, 41, 59, 0.9)' : 'var(--bg-main)',
+                  color: isSelected ? '#FFFFFF' : 'var(--text-muted)',
+                  fontWeight: isSelected ? 600 : 400,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  transition: 'all 0.2s ease',
+                  boxShadow: isSelected ? `0 0 8px ${opt.color}40` : 'none',
+                }}
+              >
+                <span>{opt.icon}</span>
+                <span>{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div 
         className={`dropzone ${dragActive ? 'active' : ''}`}
         onDragEnter={handleDrag}

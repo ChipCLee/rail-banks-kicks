@@ -10,6 +10,7 @@ import { Target } from 'lucide-react';
 export default function App() {
   const [step, setStep] = useState('upload'); // 'upload' | 'processing' | 'teach' | 'result' | 'error'
   const [currentFile, setCurrentFile] = useState(null);
+  const [feltColor, setFeltColor] = useState('auto');
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -17,8 +18,13 @@ export default function App() {
     setStep('processing');
     setErrorMsg(null);
 
+    const mergedOptions = {
+      felt_color: feltColor,
+      ...options,
+    };
+
     try {
-      const data = await analyzeTableImage(file, options);
+      const data = await analyzeTableImage(file, mergedOptions);
       setResult(data);
 
       if (data.cue_detected === false) {
@@ -33,14 +39,15 @@ export default function App() {
     }
   };
 
-  const handleFileSelected = (file) => {
+  const handleFileSelected = (file, selectedFeltColor = 'auto') => {
     setCurrentFile(file);
-    processImage(file);
+    setFeltColor(selectedFeltColor);
+    processImage(file, { felt_color: selectedFeltColor });
   };
 
   const handleSetCueBallLocation = (options) => {
     if (currentFile) {
-      processImage(currentFile, options);
+      processImage(currentFile, { felt_color: feltColor, ...options });
     }
   };
 
@@ -62,7 +69,13 @@ export default function App() {
       </header>
 
       <main className="container">
-        {step === 'upload' && <UploadScreen onFileSelected={handleFileSelected} error={errorMsg} />}
+        {step === 'upload' && (
+          <UploadScreen 
+            onFileSelected={handleFileSelected} 
+            error={errorMsg} 
+            defaultFeltColor={feltColor}
+          />
+        )}
         {step === 'processing' && <ProcessingScreen />}
         {step === 'teach' && result && (
           <TeachModeScreen 

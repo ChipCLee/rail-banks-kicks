@@ -41,26 +41,33 @@ SIDE_POCKET_RADIUS_MM = 63.0
 # Step 1 – Table Boundary Detection
 # ---------------------------------------------------------------------------
 
-def _detect_felt_contour(image_bgr: np.ndarray) -> Optional[np.ndarray]:
+def _detect_felt_contour(image_bgr: np.ndarray, felt_color: str = "auto") -> Optional[np.ndarray]:
     """
-    Detect the largest pool felt region using multi-color HSV masking.
-    Supports Green felt, Simonis Tournament Blue felt, and Red/Burgundy felt.
+    Detect the pool felt region using user-selected or multi-color HSV masking.
+    Options:
+      - 'blue': Simonis Tournament Blue felt [85..135]
+      - 'green': Traditional Green felt [30..90]
+      - 'red': Red / Burgundy felt [0..10] | [160..180]
+      - 'auto': Combined auto detection
     Returns the 4-point approximated contour or None.
     """
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    color_lower = felt_color.lower().strip() if felt_color else "auto"
 
-    # 1. Green felt HSV range
     mask_green = cv2.inRange(hsv, np.array([30, 30, 30]), np.array([90, 255, 255]))
-
-    # 2. Simonis Tournament Blue / Electric Blue felt HSV range
     mask_blue = cv2.inRange(hsv, np.array([85, 30, 30]), np.array([135, 255, 255]))
-
-    # 3. Red / Burgundy felt HSV range
     mask_red1 = cv2.inRange(hsv, np.array([0, 40, 30]), np.array([10, 255, 255]))
     mask_red2 = cv2.inRange(hsv, np.array([160, 40, 30]), np.array([180, 255, 255]))
+    mask_red = mask_red1 | mask_red2
 
-    # Combine all felt color masks
-    mask = mask_green | mask_blue | mask_red1 | mask_red2
+    if color_lower == "blue":
+        mask = mask_blue
+    elif color_lower == "green":
+        mask = mask_green
+    elif color_lower == "red":
+        mask = mask_red
+    else:
+        mask = mask_green | mask_blue | mask_red
 
     # Morphological cleanup
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
@@ -106,6 +113,7 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
 def detect_table_and_warp(
     image_bgr: np.ndarray,
     table_size: str = DEFAULT_TABLE,
+    felt_color: str = "auto",
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[TableDims], bool]:
     """
     Rule 4: Once table boundary is identified, warp and focus ONLY on the table,
@@ -122,7 +130,8 @@ def detect_table_and_warp(
     w_px = int(w_mm * px_per_mm)
     h_px = int(h_mm * px_per_mm)
 
-    contour = _detect_felt_contour(image_bgr)
+    contour = _detect_felt_contour(image_bgr, felt_color=felt_color)
+
     if contour is None:
         return None, None, None, is_portrait
 
@@ -349,10 +358,12 @@ def analyse_image(
     manual_cue_x: Optional[float] = None,
     manual_cue_y: Optional[float] = None,
     manual_cue_ball_id: Optional[str] = None,
+    felt_color: str = "auto",
 ) -> Optional[dict]:
-    warped, H, dims, is_portrait = detect_table_and_warp(image_bgr)
+    warped, H, dims, is_portrait = detect_table_and_warp(image_bgr, felt_color=felt_color)
     if warped is None or dims is None:
         return None
+
 
     pockets = build_pocket_list(dims)
     diamonds = build_diamond_list(dims)
